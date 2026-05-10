@@ -23,6 +23,14 @@ SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
 UPSTASH_REDIS_URL = "https://xxx.upstash.io"
 UPSTASH_REDIS_TOKEN = "AXxxxx..."
 
+# 用户系统配置（如需用户注册/登录功能）
+# JWT_SECRET 用于签名用户 Token，建议使用 32 位以上随机字符串
+# JWT_SECRET = "your-random-jwt-secret-key"
+
+# Stripe 支付配置（如需充值功能）
+# STRIPE_SECRET_KEY = "sk_test_xxxx..."
+# STRIPE_WEBHOOK_SECRET = "whsec_xxxx..."
+
 # ============================================
 # KV 缓存配置（可选，用于高并发场景）
 # ============================================

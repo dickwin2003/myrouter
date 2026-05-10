@@ -167,6 +167,7 @@ export function getStatusHtml() {
     </div>
     <div class="buttons">
       <a href="/docs" class="btn btn-primary"><i class="fas fa-book"></i>使用文档</a>
+      <a href="/dashboard" class="btn btn-primary" style="background: linear-gradient(135deg, #10b981 0%, #059669 100%); box-shadow: 0 4px 15px rgba(16,185,129,0.4);"><i class="fas fa-user"></i>用户中心</a>
       <a href="/admin" class="btn btn-secondary"><i class="fas fa-cog"></i>管理面板</a>
       <a href="https://github.com/dext7r/anyrouter" target="_blank" class="btn btn-secondary"><i class="fab fa-github"></i>GitHub</a>
     </div>

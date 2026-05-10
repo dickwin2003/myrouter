@@ -14,3 +14,13 @@ export const CACHE_KEY = 'anyrouter:api_configs'
 
 // 默认管理员密码
 export const DEFAULT_ADMIN_PASSWORD = '123456'
+
+// JWT 配置
+export const JWT_EXPIRES_IN = 7 * 24 * 60 * 60 // 7 天（秒）
+
+// 用户 API Key 前缀
+export const USER_API_KEY_PREFIX = 'sk-ar-user-'
+
+// 默认费率（每 1K tokens 的价格）
+export const DEFAULT_INPUT_RATE = 0.01
+export const DEFAULT_OUTPUT_RATE = 0.02

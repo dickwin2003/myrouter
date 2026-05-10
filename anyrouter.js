@@ -1,5 +1,5 @@
 // AnyRouter - API Proxy Service
-// Built at: 2025-12-02T13:55:08.917Z
+// Built at: 2026-05-10T02:29:50.511Z
 // https://github.com/dext7r/anyrouter
 
 var __defProp = Object.defineProperty;
@@ -19,25 +19,585 @@ __export(config_exports, {
   CACHE_KEY: () => CACHE_KEY,
   CONFIG_CACHE_TTL_MS: () => CONFIG_CACHE_TTL_MS,
   DEFAULT_ADMIN_PASSWORD: () => DEFAULT_ADMIN_PASSWORD,
+  DEFAULT_INPUT_RATE: () => DEFAULT_INPUT_RATE,
+  DEFAULT_OUTPUT_RATE: () => DEFAULT_OUTPUT_RATE,
   FALLBACK_CONFIG: () => FALLBACK_CONFIG,
+  JWT_EXPIRES_IN: () => JWT_EXPIRES_IN,
   KV_CACHE_TTL_SECONDS: () => KV_CACHE_TTL_SECONDS,
-  REDIS_CACHE_TTL_SECONDS: () => REDIS_CACHE_TTL_SECONDS
+  REDIS_CACHE_TTL_SECONDS: () => REDIS_CACHE_TTL_SECONDS,
+  USER_API_KEY_PREFIX: () => USER_API_KEY_PREFIX
 });
-var BUILD_TIME, FALLBACK_CONFIG, CONFIG_CACHE_TTL_MS, REDIS_CACHE_TTL_SECONDS, KV_CACHE_TTL_SECONDS, CACHE_KEY, DEFAULT_ADMIN_PASSWORD;
+var BUILD_TIME, FALLBACK_CONFIG, CONFIG_CACHE_TTL_MS, REDIS_CACHE_TTL_SECONDS, KV_CACHE_TTL_SECONDS, CACHE_KEY, DEFAULT_ADMIN_PASSWORD, JWT_EXPIRES_IN, USER_API_KEY_PREFIX, DEFAULT_INPUT_RATE, DEFAULT_OUTPUT_RATE;
 var init_config = __esm({
   "src/config.js"() {
-    BUILD_TIME = "2025-12-02T13:55:08.917Z";
+    BUILD_TIME = "2026-05-10T02:29:50.511Z";
     FALLBACK_CONFIG = {};
     CONFIG_CACHE_TTL_MS = 10 * 60 * 1e3;
     REDIS_CACHE_TTL_SECONDS = 5 * 60;
     KV_CACHE_TTL_SECONDS = 5 * 60;
     CACHE_KEY = "anyrouter:api_configs";
     DEFAULT_ADMIN_PASSWORD = "123456";
+    JWT_EXPIRES_IN = 7 * 24 * 60 * 60;
+    USER_API_KEY_PREFIX = "sk-ar-user-";
+    DEFAULT_INPUT_RATE = 0.01;
+    DEFAULT_OUTPUT_RATE = 0.02;
+  }
+});
+
+// src/db/user-db.js
+var user_db_exports = {};
+__export(user_db_exports, {
+  addBalance: () => addBalance,
+  completeStripeSession: () => completeStripeSession,
+  createStripeSession: () => createStripeSession,
+  createTransaction: () => createTransaction,
+  createUsageRecord: () => createUsageRecord,
+  createUser: () => createUser,
+  createUserKey: () => createUserKey,
+  deductBalance: () => deductBalance,
+  deleteUserKey: () => deleteUserKey,
+  findStripeSession: () => findStripeSession,
+  findUserByApiKey: () => findUserByApiKey,
+  findUserByEmail: () => findUserByEmail,
+  getAllTransactions: () => getAllTransactions,
+  getAllUsageRecords: () => getAllUsageRecords,
+  getAllUsers: () => getAllUsers,
+  getUserById: () => getUserById,
+  getUserEnabledKeysForUrl: () => getUserEnabledKeysForUrl,
+  getUserKeys: () => getUserKeys,
+  getUserTransactions: () => getUserTransactions,
+  getUserUsageRecords: () => getUserUsageRecords,
+  updateUser: () => updateUser,
+  updateUserKey: () => updateUserKey,
+  updateUserKeySkAlias: () => updateUserKeySkAlias
+});
+function supabaseUrl(env, table, query = "") {
+  return `${env.SUPABASE_URL}/rest/v1/${table}${query}`;
+}
+function supabaseHeaders(env, prefer = "") {
+  const headers = {
+    apikey: env.SUPABASE_KEY,
+    Authorization: `Bearer ${env.SUPABASE_KEY}`,
+    "Content-Type": "application/json"
+  };
+  if (prefer) headers["Prefer"] = prefer;
+  return headers;
+}
+async function findUserByEmail(env, email) {
+  if (!env.SUPABASE_URL || !env.SUPABASE_KEY) return null;
+  try {
+    const response = await fetch(
+      supabaseUrl(env, "users", `?email=eq.${encodeURIComponent(email)}&limit=1`),
+      { headers: supabaseHeaders(env) }
+    );
+    if (!response.ok) return null;
+    const data = await response.json();
+    return data.length > 0 ? data[0] : null;
+  } catch {
+    return null;
+  }
+}
+async function findUserByApiKey(env, apiKey) {
+  if (!env.SUPABASE_URL || !env.SUPABASE_KEY) return null;
+  try {
+    const response = await fetch(
+      supabaseUrl(env, "users", `?api_key=eq.${encodeURIComponent(apiKey)}&status=eq.active&limit=1`),
+      { headers: supabaseHeaders(env) }
+    );
+    if (!response.ok) return null;
+    const data = await response.json();
+    return data.length > 0 ? data[0] : null;
+  } catch {
+    return null;
+  }
+}
+async function getUserById(env, userId) {
+  if (!env.SUPABASE_URL || !env.SUPABASE_KEY) return null;
+  try {
+    const response = await fetch(
+      supabaseUrl(env, "users", `?id=eq.${userId}&limit=1`),
+      { headers: supabaseHeaders(env) }
+    );
+    if (!response.ok) return null;
+    const data = await response.json();
+    return data.length > 0 ? data[0] : null;
+  } catch {
+    return null;
+  }
+}
+async function createUser(env, { email, passwordHash, passwordSalt, displayName, apiKey }) {
+  if (!env.SUPABASE_URL || !env.SUPABASE_KEY) {
+    return { success: false, error: "Database not configured" };
+  }
+  try {
+    const response = await fetch(
+      supabaseUrl(env, "users"),
+      {
+        method: "POST",
+        headers: supabaseHeaders(env, "return=representation"),
+        body: JSON.stringify({
+          email,
+          password_hash: passwordHash,
+          password_salt: passwordSalt,
+          display_name: displayName || null,
+          api_key: apiKey
+        })
+      }
+    );
+    if (!response.ok) {
+      const errText = await response.text();
+      if (errText.includes("duplicate") || errText.includes("unique")) {
+        return { success: false, error: "\u8BE5\u90AE\u7BB1\u5DF2\u88AB\u6CE8\u518C" };
+      }
+      return { success: false, error: errText };
+    }
+    const data = await response.json();
+    return { success: true, data: data[0] || data };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+}
+async function updateUser(env, userId, updates) {
+  if (!env.SUPABASE_URL || !env.SUPABASE_KEY) {
+    return { success: false, error: "Database not configured" };
+  }
+  try {
+    const response = await fetch(
+      supabaseUrl(env, "users", `?id=eq.${userId}`),
+      {
+        method: "PATCH",
+        headers: supabaseHeaders(env),
+        body: JSON.stringify({ ...updates, updated_at: (/* @__PURE__ */ new Date()).toISOString() })
+      }
+    );
+    if (!response.ok) return { success: false, error: await response.text() };
+    return { success: true };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+}
+async function deductBalance(env, userId, cost) {
+  if (!env.SUPABASE_URL || !env.SUPABASE_KEY) {
+    return { success: false, error: "Database not configured" };
+  }
+  try {
+    const user = await getUserById(env, userId);
+    if (!user) return { success: false, error: "User not found" };
+    if (user.balance < cost) return { success: false, error: "Insufficient balance" };
+    const newBalance = Math.round((user.balance - cost) * 1e6) / 1e6;
+    const response = await fetch(
+      supabaseUrl(env, "users", `?id=eq.${userId}`),
+      {
+        method: "PATCH",
+        headers: supabaseHeaders(env),
+        body: JSON.stringify({ balance: newBalance, updated_at: (/* @__PURE__ */ new Date()).toISOString() })
+      }
+    );
+    if (!response.ok) return { success: false, error: await response.text() };
+    return { success: true, balance: newBalance };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+}
+async function addBalance(env, userId, amount) {
+  if (!env.SUPABASE_URL || !env.SUPABASE_KEY) {
+    return { success: false, error: "Database not configured" };
+  }
+  try {
+    const user = await getUserById(env, userId);
+    if (!user) return { success: false, error: "User not found" };
+    const newBalance = Math.round((user.balance + amount) * 1e6) / 1e6;
+    const response = await fetch(
+      supabaseUrl(env, "users", `?id=eq.${userId}`),
+      {
+        method: "PATCH",
+        headers: supabaseHeaders(env),
+        body: JSON.stringify({ balance: newBalance, updated_at: (/* @__PURE__ */ new Date()).toISOString() })
+      }
+    );
+    if (!response.ok) return { success: false, error: await response.text() };
+    return { success: true, balance: newBalance };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+}
+async function getAllUsers(env, limit = 50, offset = 0) {
+  if (!env.SUPABASE_URL || !env.SUPABASE_KEY) return [];
+  try {
+    const response = await fetch(
+      supabaseUrl(env, "users", `?order=created_at.desc&limit=${limit}&offset=${offset}`),
+      { headers: supabaseHeaders(env) }
+    );
+    if (!response.ok) return [];
+    return await response.json();
+  } catch {
+    return [];
+  }
+}
+async function getUserKeys(env, userId) {
+  if (!env.SUPABASE_URL || !env.SUPABASE_KEY) return [];
+  try {
+    const response = await fetch(
+      supabaseUrl(env, "user_keys", `?user_id=eq.${userId}&deleted_at=is.null&order=created_at.desc`),
+      { headers: supabaseHeaders(env) }
+    );
+    if (!response.ok) return [];
+    return await response.json();
+  } catch {
+    return [];
+  }
+}
+async function getUserEnabledKeysForUrl(env, userId, apiUrl) {
+  if (!env.SUPABASE_URL || !env.SUPABASE_KEY) return [];
+  try {
+    const response = await fetch(
+      supabaseUrl(env, "user_keys", `?user_id=eq.${userId}&api_url=eq.${encodeURIComponent(apiUrl)}&enabled=eq.true&deleted_at=is.null`),
+      { headers: supabaseHeaders(env) }
+    );
+    if (!response.ok) return [];
+    return await response.json();
+  } catch {
+    return [];
+  }
+}
+async function createUserKey(env, userId, { apiUrl, token, enabled, remark, expiresAt }) {
+  if (!env.SUPABASE_URL || !env.SUPABASE_KEY) {
+    return { success: false, error: "Database not configured" };
+  }
+  try {
+    const response = await fetch(
+      supabaseUrl(env, "user_keys"),
+      {
+        method: "POST",
+        headers: supabaseHeaders(env, "return=representation"),
+        body: JSON.stringify({
+          user_id: userId,
+          api_url: apiUrl,
+          token,
+          enabled: enabled !== false,
+          remark: remark || null,
+          expires_at: expiresAt || null
+        })
+      }
+    );
+    if (!response.ok) return { success: false, error: await response.text() };
+    const data = await response.json();
+    return { success: true, data: data[0] || data };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+}
+async function updateUserKey(env, keyId, userId, updates) {
+  if (!env.SUPABASE_URL || !env.SUPABASE_KEY) {
+    return { success: false, error: "Database not configured" };
+  }
+  try {
+    const response = await fetch(
+      supabaseUrl(env, "user_keys", `?id=eq.${keyId}&user_id=eq.${userId}`),
+      {
+        method: "PATCH",
+        headers: supabaseHeaders(env),
+        body: JSON.stringify({ ...updates, updated_at: (/* @__PURE__ */ new Date()).toISOString() })
+      }
+    );
+    if (!response.ok) return { success: false, error: await response.text() };
+    return { success: true };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+}
+async function deleteUserKey(env, keyId, userId) {
+  if (!env.SUPABASE_URL || !env.SUPABASE_KEY) {
+    return { success: false, error: "Database not configured" };
+  }
+  try {
+    const response = await fetch(
+      supabaseUrl(env, "user_keys", `?id=eq.${keyId}&user_id=eq.${userId}`),
+      {
+        method: "PATCH",
+        headers: supabaseHeaders(env),
+        body: JSON.stringify({ deleted_at: (/* @__PURE__ */ new Date()).toISOString() })
+      }
+    );
+    if (!response.ok) return { success: false, error: await response.text() };
+    return { success: true };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+}
+async function updateUserKeySkAlias(env, keyId, userId, skAlias) {
+  if (!env.SUPABASE_URL || !env.SUPABASE_KEY) {
+    return { success: false, error: "Database not configured" };
+  }
+  try {
+    const response = await fetch(
+      supabaseUrl(env, "user_keys", `?id=eq.${keyId}&user_id=eq.${userId}`),
+      {
+        method: "PATCH",
+        headers: supabaseHeaders(env, "return=representation"),
+        body: JSON.stringify({ sk_alias: skAlias, updated_at: (/* @__PURE__ */ new Date()).toISOString() })
+      }
+    );
+    if (!response.ok) return { success: false, error: await response.text() };
+    const data = await response.json();
+    return { success: true, data: data[0] || data };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+}
+async function createTransaction(env, { userId, type, amount, balanceAfter, stripeSessionId, description }) {
+  if (!env.SUPABASE_URL || !env.SUPABASE_KEY) return null;
+  try {
+    const response = await fetch(
+      supabaseUrl(env, "transactions"),
+      {
+        method: "POST",
+        headers: supabaseHeaders(env),
+        body: JSON.stringify({
+          user_id: userId,
+          type,
+          amount,
+          balance_after: balanceAfter,
+          stripe_session_id: stripeSessionId || null,
+          description: description || null
+        })
+      }
+    );
+    if (!response.ok) return null;
+    return await response.json();
+  } catch {
+    return null;
+  }
+}
+async function getUserTransactions(env, userId, limit = 20, offset = 0) {
+  if (!env.SUPABASE_URL || !env.SUPABASE_KEY) return [];
+  try {
+    const response = await fetch(
+      supabaseUrl(env, "transactions", `?user_id=eq.${userId}&order=created_at.desc&limit=${limit}&offset=${offset}`),
+      { headers: supabaseHeaders(env) }
+    );
+    if (!response.ok) return [];
+    return await response.json();
+  } catch {
+    return [];
+  }
+}
+async function getAllTransactions(env, limit = 50, offset = 0) {
+  if (!env.SUPABASE_URL || !env.SUPABASE_KEY) return [];
+  try {
+    const response = await fetch(
+      supabaseUrl(env, "transactions", `?order=created_at.desc&limit=${limit}&offset=${offset}`),
+      { headers: supabaseHeaders(env) }
+    );
+    if (!response.ok) return [];
+    return await response.json();
+  } catch {
+    return [];
+  }
+}
+async function createUsageRecord(env, { userId, apiUrl, model, inputTokens, outputTokens, cost, keyId, keyType }) {
+  if (!env.SUPABASE_URL || !env.SUPABASE_KEY) return null;
+  try {
+    const response = await fetch(
+      supabaseUrl(env, "usage_records"),
+      {
+        method: "POST",
+        headers: supabaseHeaders(env),
+        body: JSON.stringify({
+          user_id: userId,
+          api_url: apiUrl,
+          model: model || null,
+          input_tokens: inputTokens || 0,
+          output_tokens: outputTokens || 0,
+          cost,
+          key_id: keyId || null,
+          key_type: keyType || "shared"
+        })
+      }
+    );
+    if (!response.ok) return null;
+    return await response.json();
+  } catch {
+    return null;
+  }
+}
+async function getUserUsageRecords(env, userId, limit = 20, offset = 0) {
+  if (!env.SUPABASE_URL || !env.SUPABASE_KEY) return [];
+  try {
+    const response = await fetch(
+      supabaseUrl(env, "usage_records", `?user_id=eq.${userId}&order=created_at.desc&limit=${limit}&offset=${offset}`),
+      { headers: supabaseHeaders(env) }
+    );
+    if (!response.ok) return [];
+    return await response.json();
+  } catch {
+    return [];
+  }
+}
+async function getAllUsageRecords(env, limit = 50, offset = 0) {
+  if (!env.SUPABASE_URL || !env.SUPABASE_KEY) return [];
+  try {
+    const response = await fetch(
+      supabaseUrl(env, "usage_records", `?order=created_at.desc&limit=${limit}&offset=${offset}`),
+      { headers: supabaseHeaders(env) }
+    );
+    if (!response.ok) return [];
+    return await response.json();
+  } catch {
+    return [];
+  }
+}
+async function createStripeSession(env, { userId, sessionId, amount }) {
+  if (!env.SUPABASE_URL || !env.SUPABASE_KEY) return null;
+  try {
+    const response = await fetch(
+      supabaseUrl(env, "stripe_sessions"),
+      {
+        method: "POST",
+        headers: supabaseHeaders(env),
+        body: JSON.stringify({
+          user_id: userId,
+          session_id: sessionId,
+          amount
+        })
+      }
+    );
+    if (!response.ok) return null;
+    return await response.json();
+  } catch {
+    return null;
+  }
+}
+async function findStripeSession(env, sessionId) {
+  if (!env.SUPABASE_URL || !env.SUPABASE_KEY) return null;
+  try {
+    const response = await fetch(
+      supabaseUrl(env, "stripe_sessions", `?session_id=eq.${encodeURIComponent(sessionId)}&limit=1`),
+      { headers: supabaseHeaders(env) }
+    );
+    if (!response.ok) return null;
+    const data = await response.json();
+    return data.length > 0 ? data[0] : null;
+  } catch {
+    return null;
+  }
+}
+async function completeStripeSession(env, sessionId) {
+  if (!env.SUPABASE_URL || !env.SUPABASE_KEY) return;
+  try {
+    await fetch(
+      supabaseUrl(env, "stripe_sessions", `?session_id=eq.${encodeURIComponent(sessionId)}`),
+      {
+        method: "PATCH",
+        headers: supabaseHeaders(env),
+        body: JSON.stringify({ status: "completed", completed_at: (/* @__PURE__ */ new Date()).toISOString() })
+      }
+    );
+  } catch {
+  }
+}
+var init_user_db = __esm({
+  "src/db/user-db.js"() {
   }
 });
 
 // src/utils/helpers.js
 init_config();
+
+// src/utils/jwt.js
+init_config();
+function generateSalt(length = 32) {
+  const array = new Uint8Array(length);
+  crypto.getRandomValues(array);
+  return Array.from(array, (b) => b.toString(16).padStart(2, "0")).join("");
+}
+async function hashPassword(password, salt) {
+  const encoder = new TextEncoder();
+  const data = encoder.encode(password + salt);
+  const hashBuffer = await crypto.subtle.digest("SHA-256", data);
+  return Array.from(new Uint8Array(hashBuffer), (b) => b.toString(16).padStart(2, "0")).join("");
+}
+async function verifyPassword(password, salt, storedHash) {
+  const hash = await hashPassword(password, salt);
+  return hash === storedHash;
+}
+function base64UrlEncode(buffer) {
+  const bytes = new Uint8Array(buffer);
+  let binary = "";
+  for (const b of bytes) binary += String.fromCharCode(b);
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+function base64UrlDecode(str) {
+  str = str.replace(/-/g, "+").replace(/_/g, "/");
+  while (str.length % 4) str += "=";
+  const binary = atob(str);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes;
+}
+async function signJWT(payload, secret) {
+  const header = { alg: "HS256", typ: "JWT" };
+  const encoder = new TextEncoder();
+  const headerB64 = base64UrlEncode(encoder.encode(JSON.stringify(header)));
+  const payloadB64 = base64UrlEncode(encoder.encode(JSON.stringify(payload)));
+  const signingInput = `${headerB64}.${payloadB64}`;
+  const key = await crypto.subtle.importKey(
+    "raw",
+    encoder.encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"]
+  );
+  const signature = await crypto.subtle.sign("HMAC", key, encoder.encode(signingInput));
+  const signatureB64 = base64UrlEncode(signature);
+  return `${signingInput}.${signatureB64}`;
+}
+async function verifyJWT(token, secret) {
+  try {
+    const parts = token.split(".");
+    if (parts.length !== 3) return null;
+    const encoder = new TextEncoder();
+    const [headerB64, payloadB64, signatureB64] = parts;
+    const signingInput = `${headerB64}.${payloadB64}`;
+    const key = await crypto.subtle.importKey(
+      "raw",
+      encoder.encode(secret),
+      { name: "HMAC", hash: "SHA-256" },
+      false,
+      ["verify"]
+    );
+    const signature = base64UrlDecode(signatureB64);
+    const valid = await crypto.subtle.verify("HMAC", key, signature, encoder.encode(signingInput));
+    if (!valid) return null;
+    const payload = JSON.parse(new TextDecoder().decode(base64UrlDecode(payloadB64)));
+    if (payload.exp && payload.exp < Math.floor(Date.now() / 1e3)) {
+      return null;
+    }
+    return payload;
+  } catch {
+    return null;
+  }
+}
+async function createUserToken(userId, email, role, secret) {
+  const payload = {
+    sub: userId,
+    email,
+    role,
+    iat: Math.floor(Date.now() / 1e3),
+    exp: Math.floor(Date.now() / 1e3) + JWT_EXPIRES_IN
+  };
+  return signJWT(payload, secret);
+}
+function generateUserApiKey() {
+  const chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+  let result = "sk-ar-user-";
+  for (let i = 0; i < 32; i++) {
+    result += chars.charAt(Math.floor(Math.random() * chars.length));
+  }
+  return result;
+}
+
+// src/utils/helpers.js
 function getAdminPassword(env) {
   return env.ADMIN_PASSWORD || DEFAULT_ADMIN_PASSWORD;
 }
@@ -93,6 +653,19 @@ function validateConfigPayload(body, options = {}) {
     return { valid: false, error: "No fields provided for update" };
   }
   return { valid: true };
+}
+async function verifyUser(request, env) {
+  const authHeader = request.headers.get("Authorization");
+  if (!authHeader || !authHeader.startsWith("Bearer ")) return null;
+  const token = authHeader.substring(7).trim();
+  if (!env.JWT_SECRET) return null;
+  const payload = await verifyJWT(token, env.JWT_SECRET);
+  if (!payload || !payload.sub) return null;
+  return {
+    userId: payload.sub,
+    email: payload.email,
+    role: payload.role
+  };
 }
 function jsonResponse(data, status = 200) {
   return new Response(JSON.stringify(data), {
@@ -494,6 +1067,18 @@ function findBySkAlias(config, skAlias) {
   }
   return null;
 }
+function getRandomEnabledKey(config, apiUrl) {
+  const apiConfig = config[apiUrl];
+  if (!apiConfig || !apiConfig.keys) {
+    return null;
+  }
+  const enabledKeys = apiConfig.keys.filter((key) => key.enabled);
+  if (enabledKeys.length === 0) {
+    return null;
+  }
+  const randomIndex = Math.floor(Math.random() * enabledKeys.length);
+  return enabledKeys[randomIndex].token;
+}
 
 // src/cache/stats.js
 var STATS_PREFIX = "anyrouter:stats";
@@ -886,6 +1471,200 @@ async function handleApiRequest(request, env, url) {
 }
 
 // src/handlers/proxy.js
+init_config();
+init_user_db();
+
+// src/utils/billing.js
+init_config();
+
+// src/db/pricing-db.js
+function supabaseUrl2(env, table, query = "") {
+  return `${env.SUPABASE_URL}/rest/v1/${table}${query}`;
+}
+function supabaseHeaders2(env, prefer = "") {
+  const headers = {
+    apikey: env.SUPABASE_KEY,
+    Authorization: `Bearer ${env.SUPABASE_KEY}`,
+    "Content-Type": "application/json"
+  };
+  if (prefer) headers["Prefer"] = prefer;
+  return headers;
+}
+var pricingCache = null;
+var pricingCacheTime = 0;
+var PRICING_CACHE_TTL = 5 * 60 * 1e3;
+async function getAllPricingRules(env) {
+  if (!env.SUPABASE_URL || !env.SUPABASE_KEY) return [];
+  try {
+    const response = await fetch(
+      supabaseUrl2(env, "pricing_rules", "?order=api_url,created_at.desc"),
+      { headers: supabaseHeaders2(env) }
+    );
+    if (!response.ok) return [];
+    return await response.json();
+  } catch {
+    return [];
+  }
+}
+async function getPricingForApi(env, apiUrl) {
+  const now = Date.now();
+  if (pricingCache && now - pricingCacheTime < PRICING_CACHE_TTL) {
+    return pricingCache.filter((r) => r.api_url === apiUrl);
+  }
+  const allRules = await getAllPricingRules(env);
+  pricingCache = allRules;
+  pricingCacheTime = now;
+  return allRules.filter((r) => r.api_url === apiUrl);
+}
+async function createPricingRule(env, { apiUrl, modelPattern, inputRate, outputRate, isDefault }) {
+  if (!env.SUPABASE_URL || !env.SUPABASE_KEY) {
+    return { success: false, error: "Database not configured" };
+  }
+  try {
+    const response = await fetch(
+      supabaseUrl2(env, "pricing_rules"),
+      {
+        method: "POST",
+        headers: supabaseHeaders2(env, "return=representation"),
+        body: JSON.stringify({
+          api_url: apiUrl,
+          model_pattern: modelPattern || "*",
+          input_rate: inputRate || 0,
+          output_rate: outputRate || 0,
+          is_default: isDefault || false
+        })
+      }
+    );
+    if (!response.ok) return { success: false, error: await response.text() };
+    const data = await response.json();
+    pricingCache = null;
+    return { success: true, data: data[0] || data };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+}
+async function updatePricingRule(env, ruleId, updates) {
+  if (!env.SUPABASE_URL || !env.SUPABASE_KEY) {
+    return { success: false, error: "Database not configured" };
+  }
+  try {
+    const response = await fetch(
+      supabaseUrl2(env, "pricing_rules", `?id=eq.${ruleId}`),
+      {
+        method: "PATCH",
+        headers: supabaseHeaders2(env),
+        body: JSON.stringify({ ...updates, updated_at: (/* @__PURE__ */ new Date()).toISOString() })
+      }
+    );
+    if (!response.ok) return { success: false, error: await response.text() };
+    pricingCache = null;
+    return { success: true };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+}
+async function deletePricingRule(env, ruleId) {
+  if (!env.SUPABASE_URL || !env.SUPABASE_KEY) {
+    return { success: false, error: "Database not configured" };
+  }
+  try {
+    const response = await fetch(
+      supabaseUrl2(env, "pricing_rules", `?id=eq.${ruleId}`),
+      {
+        method: "DELETE",
+        headers: supabaseHeaders2(env)
+      }
+    );
+    if (!response.ok) return { success: false, error: await response.text() };
+    pricingCache = null;
+    return { success: true };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+}
+
+// src/utils/billing.js
+init_user_db();
+function extractTokens(responseBody, apiUrl) {
+  try {
+    const data = typeof responseBody === "string" ? JSON.parse(responseBody) : responseBody;
+    let inputTokens = 0;
+    let outputTokens = 0;
+    if (data.usage) {
+      inputTokens = data.usage.prompt_tokens || data.usage.input_tokens || 0;
+      outputTokens = data.usage.completion_tokens || data.usage.output_tokens || 0;
+    }
+    return {
+      inputTokens,
+      outputTokens,
+      model: data.model || null
+    };
+  } catch {
+    return { inputTokens: 0, outputTokens: 0, model: null };
+  }
+}
+function matchModel(model, pattern) {
+  if (pattern === "*") return true;
+  const regex = new RegExp(
+    "^" + pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".") + "$",
+    "i"
+  );
+  return regex.test(model);
+}
+async function findPricing(env, apiUrl, model) {
+  const rules = await getPricingForApi(env, apiUrl);
+  if (!rules || rules.length === 0) {
+    return {
+      input_rate: DEFAULT_INPUT_RATE,
+      output_rate: DEFAULT_OUTPUT_RATE
+    };
+  }
+  for (const rule of rules) {
+    if (!rule.is_default && matchModel(model || "", rule.model_pattern)) {
+      return rule;
+    }
+  }
+  const defaultRule = rules.find((r) => r.is_default);
+  if (defaultRule) return defaultRule;
+  return {
+    input_rate: DEFAULT_INPUT_RATE,
+    output_rate: DEFAULT_OUTPUT_RATE
+  };
+}
+function calculateCost(inputTokens, outputTokens, pricing) {
+  const inputCost = inputTokens / 1e3 * (pricing.input_rate || 0);
+  const outputCost = outputTokens / 1e3 * (pricing.output_rate || 0);
+  return Math.round((inputCost + outputCost) * 1e6) / 1e6;
+}
+async function performBilling(env, userId, { apiUrl, model, inputTokens, outputTokens, keyId, keyType }) {
+  try {
+    const pricing = await findPricing(env, apiUrl, model);
+    const cost = calculateCost(inputTokens, outputTokens, pricing);
+    if (cost <= 0) return;
+    const result = await deductBalance(env, userId, cost);
+    if (!result.success) return;
+    await createTransaction(env, {
+      userId,
+      type: "usage",
+      amount: -cost,
+      balanceAfter: result.balance,
+      description: `${model || "unknown"} - ${inputTokens}in/${outputTokens}out tokens`
+    });
+    await createUsageRecord(env, {
+      userId,
+      apiUrl,
+      model,
+      inputTokens,
+      outputTokens,
+      cost,
+      keyId,
+      keyType
+    });
+  } catch {
+  }
+}
+
+// src/handlers/proxy.js
 function errorResponse(code, message, hint) {
   return jsonResponse({
     error: {
@@ -894,7 +1673,7 @@ function errorResponse(code, message, hint) {
       hint,
       contact: "\u5982\u6709\u7591\u95EE\u8BF7\u8054\u7CFB\u7BA1\u7406\u5458"
     }
-  }, code === "UNAUTHORIZED" ? 401 : code === "BAD_REQUEST" ? 400 : code === "NOT_FOUND" ? 404 : code === "FORBIDDEN" ? 403 : code === "SERVICE_ERROR" ? 503 : 500);
+  }, code === "UNAUTHORIZED" ? 401 : code === "BAD_REQUEST" ? 400 : code === "NOT_FOUND" ? 404 : code === "FORBIDDEN" ? 403 : code === "PAYMENT_REQUIRED" ? 402 : code === "SERVICE_ERROR" ? 503 : 500);
 }
 async function handleProxyRequest(request, env, url, ctx) {
   const clientIp = request.headers.get("CF-Connecting-IP") || request.headers.get("X-Forwarded-For")?.split(",")[0]?.trim() || "unknown";
@@ -919,6 +1698,9 @@ async function handleProxyRequest(request, env, url, ctx) {
     );
   }
   const authValue = authHeader.substring(7).trim();
+  if (authValue.startsWith(USER_API_KEY_PREFIX)) {
+    return handleUserProxyRequest(request, env, url, ctx, authValue, clientIp);
+  }
   const config = await getConfigFromDB(env);
   let tokenToUse;
   let targetApiUrl;
@@ -1070,6 +1852,634 @@ async function handleProxyRequest(request, env, url, ctx) {
       "\u4EE3\u7406\u8BF7\u6C42\u5931\u8D25",
       `\u65E0\u6CD5\u8FDE\u63A5\u5230\u76EE\u6807 API "${targetApiUrl}"\uFF0C\u53EF\u80FD\u662F\u7F51\u7EDC\u95EE\u9898\u6216\u76EE\u6807\u670D\u52A1\u4E0D\u53EF\u7528\uFF0C\u8BF7\u7A0D\u540E\u91CD\u8BD5`
     );
+  }
+}
+async function handleUserProxyRequest(request, env, url, ctx, apiKey, clientIp) {
+  const user = await findUserByApiKey(env, apiKey);
+  if (!user) {
+    return errorResponse(
+      "UNAUTHORIZED",
+      "\u65E0\u6548\u7684\u7528\u6237 API Key",
+      "\u8BF7\u68C0\u67E5\u60A8\u7684 API Key \u662F\u5426\u6B63\u786E\uFF0C\u6216\u91CD\u65B0\u767B\u5F55\u83B7\u53D6"
+    );
+  }
+  if (user.status !== "active") {
+    return errorResponse(
+      "FORBIDDEN",
+      "\u8D26\u6237\u5DF2\u88AB\u7981\u7528",
+      "\u60A8\u7684\u8D26\u6237\u5DF2\u88AB\u6682\u505C\u6216\u5C01\u7981\uFF0C\u8BF7\u8054\u7CFB\u7BA1\u7406\u5458"
+    );
+  }
+  if (user.balance <= 0) {
+    return errorResponse(
+      "PAYMENT_REQUIRED",
+      "\u4F59\u989D\u4E0D\u8DB3",
+      "\u60A8\u7684\u8D26\u6237\u4F59\u989D\u4E0D\u8DB3\uFF0C\u8BF7\u524D\u5F80\u7528\u6237\u9762\u677F\u5145\u503C\u540E\u518D\u4F7F\u7528"
+    );
+  }
+  let requestBody = null;
+  let targetApiUrl = null;
+  let model = null;
+  try {
+    const clonedRequest = request.clone();
+    requestBody = await clonedRequest.text();
+    const bodyData = JSON.parse(requestBody);
+    model = bodyData.model || null;
+    targetApiUrl = bodyData._target_url || null;
+  } catch {
+  }
+  if (!targetApiUrl) {
+    const headerUrl = request.headers.get("X-Target-URL");
+    if (headerUrl) {
+      targetApiUrl = headerUrl;
+    }
+  }
+  if (!targetApiUrl) {
+    return errorResponse(
+      "BAD_REQUEST",
+      "\u7F3A\u5C11\u76EE\u6807 API \u5730\u5740",
+      '\u8BF7\u5728\u8BF7\u6C42 body \u4E2D\u6DFB\u52A0 "_target_url" \u5B57\u6BB5\uFF0C\u6216\u5728\u8BF7\u6C42\u5934\u4E2D\u6DFB\u52A0 "X-Target-URL" \u6307\u5B9A\u76EE\u6807 API \u5730\u5740'
+    );
+  }
+  let tokenToUse = null;
+  let keyType = "shared";
+  let usedKeyId = null;
+  const userKeys = await getUserEnabledKeysForUrl(env, user.id, targetApiUrl);
+  if (userKeys && userKeys.length > 0) {
+    const selectedKey = userKeys[Math.floor(Math.random() * userKeys.length)];
+    tokenToUse = selectedKey.token;
+    usedKeyId = selectedKey.key_id;
+    keyType = "user";
+    if (selectedKey.expires_at && new Date(selectedKey.expires_at) < /* @__PURE__ */ new Date()) {
+      tokenToUse = null;
+    }
+  }
+  if (!tokenToUse) {
+    const sharedConfig = await getConfigFromDB(env);
+    const sharedKey = getRandomEnabledKey(sharedConfig, targetApiUrl);
+    if (!sharedKey) {
+      return errorResponse(
+        "NOT_FOUND",
+        "\u6CA1\u6709\u53EF\u7528\u7684 API Key",
+        `\u76EE\u6807 API "${targetApiUrl}" \u6CA1\u6709\u53EF\u7528\u7684\u5171\u4EAB Key\uFF0C\u8BF7\u786E\u8BA4\u5730\u5740\u6B63\u786E\u6216\u6DFB\u52A0\u81EA\u5DF1\u7684 Key`
+      );
+    }
+    tokenToUse = sharedKey;
+    keyType = "shared";
+  }
+  const targetUrl = new URL(targetApiUrl);
+  const selfHostname = url.hostname.toLowerCase();
+  const targetHostname = targetUrl.hostname.toLowerCase();
+  if (targetHostname === selfHostname || targetHostname.endsWith("." + selfHostname) || selfHostname.endsWith("." + targetHostname)) {
+    return errorResponse("FORBIDDEN", "\u7981\u6B62\u53CD\u4EE3\u81EA\u8EAB", "\u4E0D\u5141\u8BB8\u5C06\u8BF7\u6C42\u4EE3\u7406\u5230\u4EE3\u7406\u670D\u52A1\u81EA\u8EAB\u7684\u57DF\u540D");
+  }
+  url.protocol = targetUrl.protocol;
+  url.hostname = targetUrl.hostname;
+  url.port = targetUrl.port || "";
+  const headers = new Headers(request.headers);
+  headers.set("authorization", "Bearer " + tokenToUse);
+  headers.delete("X-Target-URL");
+  const modifiedRequest = new Request(url.toString(), {
+    headers,
+    method: request.method,
+    body: request.body,
+    redirect: "follow"
+  });
+  try {
+    const response = await fetch(modifiedRequest);
+    const contentType = response.headers.get("content-type") || "";
+    const isStreaming = contentType.includes("text/event-stream") || contentType.includes("stream");
+    let billingInfo = { apiUrl: targetApiUrl, model, keyId: usedKeyId, keyType };
+    if (!isStreaming && response.ok) {
+      const clonedResponse = response.clone();
+      ctx.waitUntil((async () => {
+        try {
+          const body = await clonedResponse.text();
+          const tokens = extractTokens(body, targetApiUrl);
+          billingInfo.inputTokens = tokens.inputTokens;
+          billingInfo.outputTokens = tokens.outputTokens;
+          billingInfo.model = tokens.model || model;
+          await performBilling(env, user.id, billingInfo);
+        } catch {
+        }
+      })());
+    } else if (isStreaming) {
+      ctx.waitUntil((async () => {
+        try {
+          const pricing = await findPricing(env, targetApiUrl, model);
+          const estimatedCost = 1e-3;
+          const cost = Math.max(calculateCost(0, 0, pricing), estimatedCost);
+          const { deductBalance: deductBalance2, createTransaction: createTransaction2, createUsageRecord: createUsageRecord2 } = await Promise.resolve().then(() => (init_user_db(), user_db_exports));
+          const result = await deductBalance2(env, user.id, cost);
+          if (result.success) {
+            await createTransaction2(env, {
+              userId: user.id,
+              type: "usage",
+              amount: -cost,
+              balanceAfter: result.balance,
+              description: `${model || "streaming"} - estimated`
+            });
+            await createUsageRecord2(env, {
+              userId: user.id,
+              apiUrl: targetApiUrl,
+              model,
+              inputTokens: 0,
+              outputTokens: 0,
+              cost,
+              keyId: usedKeyId,
+              keyType
+            });
+          }
+        } catch {
+        }
+      })());
+    }
+    const modifiedResponse = new Response(response.body, response);
+    modifiedResponse.headers.set("Access-Control-Allow-Origin", "*");
+    if (isStreaming) {
+      modifiedResponse.headers.set("Cache-Control", "no-cache, no-store, no-transform, must-revalidate");
+      modifiedResponse.headers.set("X-Accel-Buffering", "no");
+      modifiedResponse.headers.set("Connection", "keep-alive");
+      modifiedResponse.headers.set("Content-Encoding", "identity");
+      modifiedResponse.headers.delete("Content-Length");
+    }
+    if (ctx && ctx.waitUntil) {
+      ctx.waitUntil(recordRequest(env, {
+        apiUrl: targetApiUrl,
+        keyId: usedKeyId,
+        success: response.ok,
+        ip: clientIp
+      }));
+    }
+    return modifiedResponse;
+  } catch (error) {
+    if (ctx && ctx.waitUntil) {
+      ctx.waitUntil(recordRequest(env, {
+        apiUrl: targetApiUrl,
+        keyId: usedKeyId,
+        success: false,
+        ip: clientIp
+      }));
+    }
+    console.error("User proxy request error:", error);
+    return errorResponse(
+      "SERVICE_ERROR",
+      "\u4EE3\u7406\u8BF7\u6C42\u5931\u8D25",
+      `\u65E0\u6CD5\u8FDE\u63A5\u5230\u76EE\u6807 API "${targetApiUrl}"\uFF0C\u53EF\u80FD\u662F\u7F51\u7EDC\u95EE\u9898\u6216\u76EE\u6807\u670D\u52A1\u4E0D\u53EF\u7528`
+    );
+  }
+}
+
+// src/handlers/user-api.js
+init_user_db();
+
+// src/utils/stripe.js
+async function stripeFetch(env, path, method = "GET", body = null) {
+  const options = {
+    method,
+    headers: {
+      Authorization: `Bearer ${env.STRIPE_SECRET_KEY}`
+    }
+  };
+  if (body) {
+    options.headers["Content-Type"] = "application/x-www-form-urlencoded";
+    options.body = new URLSearchParams(body).toString();
+  }
+  const response = await fetch(`https://api.stripe.com/v1${path}`, options);
+  return response.json();
+}
+async function createCheckoutSession(env, { userId, userEmail, amount }) {
+  try {
+    const session = await stripeFetch(env, "/checkout/sessions", "POST", {
+      mode: "payment",
+      "payment_method_types[0]": "card",
+      "customer_email": userEmail,
+      "line_items[0][price_data][currency]": "usd",
+      "line_items[0][price_data][product_data][name]": `AnyRouter \u4F59\u989D\u5145\u503C $${amount}`,
+      "line_items[0][price_data][unit_amount]": String(Math.round(amount * 100)),
+      "line_items[0][quantity]": "1",
+      "success_url": `${env.SITE_URL || "https://anyrouter.dickwin2003.workers.dev"}/dashboard?topup=success`,
+      "cancel_url": `${env.SITE_URL || "https://anyrouter.dickwin2003.workers.dev"}/dashboard?topup=cancel`,
+      "metadata[user_id]": String(userId),
+      "metadata[amount]": String(amount)
+    });
+    return { success: true, url: session.url, sessionId: session.id };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+}
+async function verifyWebhookSignature(payload, sigHeader, secret) {
+  try {
+    const elements = sigHeader.split(",");
+    const sigMap = {};
+    for (const element of elements) {
+      const [key2, value] = element.split("=");
+      sigMap[key2.trim()] = value.trim();
+    }
+    const timestamp = sigMap["t"];
+    const signature = sigMap["v1"];
+    if (!timestamp || !signature) return false;
+    const signedPayload = `${timestamp}.${payload}`;
+    const encoder = new TextEncoder();
+    const key = await crypto.subtle.importKey(
+      "raw",
+      encoder.encode(secret),
+      { name: "HMAC", hash: "SHA-256" },
+      false,
+      ["sign"]
+    );
+    const sigBytes = await crypto.subtle.sign("HMAC", key, encoder.encode(signedPayload));
+    const computedSig = Array.from(new Uint8Array(sigBytes), (b) => b.toString(16).padStart(2, "0")).join("");
+    return computedSig === signature;
+  } catch {
+    return false;
+  }
+}
+async function handleWebhookEvent(env, event) {
+  if (event.type === "checkout.session.completed") {
+    const session = event.data.object;
+    const userId = parseInt(session.metadata?.user_id, 10);
+    const amount = parseFloat(session.metadata?.amount || "0");
+    const sessionId = session.id;
+    if (!userId || !amount) return;
+    const { findStripeSession: findStripeSession2, completeStripeSession: completeStripeSession2, addBalance: addBalance2, createTransaction: createTransaction2 } = await Promise.resolve().then(() => (init_user_db(), user_db_exports));
+    const existing = await findStripeSession2(env, sessionId);
+    if (existing && existing.status === "completed") return;
+    const result = await addBalance2(env, userId, amount);
+    if (result.success) {
+      await createTransaction2(env, {
+        userId,
+        type: "topup",
+        amount,
+        balanceAfter: result.balance,
+        stripeSessionId: sessionId,
+        description: `Stripe \u5145\u503C $${amount}`
+      });
+      await completeStripeSession2(env, sessionId);
+    }
+  }
+}
+
+// src/handlers/user-api.js
+async function handleAuthApi(request, env, url) {
+  const path = url.pathname;
+  if (path === "/api/auth/register" && request.method === "POST") {
+    return handleRegister(request, env);
+  }
+  if (path === "/api/auth/login" && request.method === "POST") {
+    return handleLogin(request, env);
+  }
+  return jsonResponse({ error: "Not found" }, 404);
+}
+async function handleUserApi(request, env, url) {
+  const user = await verifyUser(request, env);
+  if (!user) {
+    return jsonResponse({ error: "\u672A\u6388\u6743\uFF0C\u8BF7\u5148\u767B\u5F55" }, 401);
+  }
+  const path = url.pathname;
+  if (path === "/api/user/profile" && request.method === "GET") {
+    return handleGetProfile(env, user);
+  }
+  if (path === "/api/user/profile" && request.method === "PATCH") {
+    return handleUpdateProfile(request, env, user);
+  }
+  if (path === "/api/user/keys" && request.method === "GET") {
+    return handleGetKeys(env, user);
+  }
+  if (path === "/api/user/keys" && request.method === "POST") {
+    return handleCreateKey(request, env, user);
+  }
+  if (path.startsWith("/api/user/keys/") && request.method === "PATCH") {
+    const keyId = path.split("/").pop();
+    return handleUpdateKey(request, env, user, keyId);
+  }
+  if (path.startsWith("/api/user/keys/") && request.method === "DELETE") {
+    const keyId = path.split("/").pop();
+    return handleDeleteKey(env, user, keyId);
+  }
+  if (path.endsWith("/sk-alias") && request.method === "POST") {
+    const parts = path.split("/");
+    const keyId = parts[parts.length - 2];
+    return handleGenerateSkAlias(env, user, keyId);
+  }
+  if (path === "/api/user/usage" && request.method === "GET") {
+    return handleGetUsage(env, url, user);
+  }
+  if (path === "/api/user/transactions" && request.method === "GET") {
+    return handleGetTransactions(env, url, user);
+  }
+  if (path === "/api/user/topup" && request.method === "POST") {
+    return handleTopup(request, env, user);
+  }
+  if (path === "/api/user/pricing" && request.method === "GET") {
+    return handleGetPricing(env);
+  }
+  return jsonResponse({ error: "Not found" }, 404);
+}
+async function handleRegister(request, env) {
+  try {
+    const body = await request.json();
+    const { email, password, display_name } = body;
+    if (!email || !password) {
+      return jsonResponse({ error: "\u90AE\u7BB1\u548C\u5BC6\u7801\u4E0D\u80FD\u4E3A\u7A7A" }, 400);
+    }
+    if (password.length < 8) {
+      return jsonResponse({ error: "\u5BC6\u7801\u81F3\u5C11 8 \u4F4D" }, 400);
+    }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      return jsonResponse({ error: "\u90AE\u7BB1\u683C\u5F0F\u65E0\u6548" }, 400);
+    }
+    const existing = await findUserByEmail(env, email);
+    if (existing) {
+      return jsonResponse({ error: "\u8BE5\u90AE\u7BB1\u5DF2\u88AB\u6CE8\u518C" }, 409);
+    }
+    const salt = generateSalt();
+    const passwordHash = await hashPassword(password, salt);
+    const apiKey = generateUserApiKey();
+    const result = await createUser(env, {
+      email,
+      passwordHash,
+      passwordSalt: salt,
+      displayName: display_name || null,
+      apiKey
+    });
+    if (!result.success) {
+      return jsonResponse({ error: result.error }, 500);
+    }
+    const token = await createUserToken(result.data.id, email, "user", env.JWT_SECRET);
+    return jsonResponse({
+      success: true,
+      token,
+      user: {
+        id: result.data.id,
+        email,
+        display_name: display_name || null,
+        api_key: apiKey,
+        balance: 0
+      }
+    });
+  } catch {
+    return jsonResponse({ error: "\u8BF7\u6C42\u683C\u5F0F\u9519\u8BEF" }, 400);
+  }
+}
+async function handleLogin(request, env) {
+  try {
+    const body = await request.json();
+    const { email, password } = body;
+    if (!email || !password) {
+      return jsonResponse({ error: "\u90AE\u7BB1\u548C\u5BC6\u7801\u4E0D\u80FD\u4E3A\u7A7A" }, 400);
+    }
+    const user = await findUserByEmail(env, email);
+    if (!user) {
+      return jsonResponse({ error: "\u90AE\u7BB1\u6216\u5BC6\u7801\u9519\u8BEF" }, 401);
+    }
+    if (user.status !== "active") {
+      return jsonResponse({ error: "\u8D26\u6237\u5DF2\u88AB\u7981\u7528\uFF0C\u8BF7\u8054\u7CFB\u7BA1\u7406\u5458" }, 403);
+    }
+    const valid = await verifyPassword(password, user.password_salt, user.password_hash);
+    if (!valid) {
+      return jsonResponse({ error: "\u90AE\u7BB1\u6216\u5BC6\u7801\u9519\u8BEF" }, 401);
+    }
+    const token = await createUserToken(user.id, user.email, user.role, env.JWT_SECRET);
+    return jsonResponse({
+      success: true,
+      token,
+      user: {
+        id: user.id,
+        email: user.email,
+        display_name: user.display_name,
+        api_key: user.api_key,
+        balance: user.balance,
+        role: user.role
+      }
+    });
+  } catch {
+    return jsonResponse({ error: "\u8BF7\u6C42\u683C\u5F0F\u9519\u8BEF" }, 400);
+  }
+}
+async function handleGetProfile(env, user) {
+  const dbUser = await getUserById(env, user.userId);
+  if (!dbUser) {
+    return jsonResponse({ error: "\u7528\u6237\u4E0D\u5B58\u5728" }, 404);
+  }
+  return jsonResponse({
+    id: dbUser.id,
+    email: dbUser.email,
+    display_name: dbUser.display_name,
+    api_key: dbUser.api_key,
+    balance: dbUser.balance,
+    role: dbUser.role,
+    created_at: dbUser.created_at
+  });
+}
+async function handleUpdateProfile(request, env, user) {
+  try {
+    const body = await request.json();
+    const updates = {};
+    if ("display_name" in body) {
+      updates.display_name = body.display_name;
+    }
+    if ("password" in body) {
+      if (body.password.length < 8) {
+        return jsonResponse({ error: "\u5BC6\u7801\u81F3\u5C11 8 \u4F4D" }, 400);
+      }
+      const salt = generateSalt();
+      updates.password_hash = await hashPassword(body.password, salt);
+      updates.password_salt = salt;
+    }
+    if (Object.keys(updates).length === 0) {
+      return jsonResponse({ error: "\u6CA1\u6709\u9700\u8981\u66F4\u65B0\u7684\u5B57\u6BB5" }, 400);
+    }
+    const result = await updateUser(env, user.userId, updates);
+    if (!result.success) {
+      return jsonResponse({ error: result.error }, 500);
+    }
+    return jsonResponse({ success: true });
+  } catch {
+    return jsonResponse({ error: "\u8BF7\u6C42\u683C\u5F0F\u9519\u8BEF" }, 400);
+  }
+}
+async function handleGetKeys(env, user) {
+  const keys = await getUserKeys(env, user.userId);
+  const safeKeys = keys.map((k) => ({
+    ...k,
+    token: k.token ? k.token.substring(0, 6) + "***" + k.token.substring(k.token.length - 4) : ""
+  }));
+  return jsonResponse({ keys: safeKeys });
+}
+async function handleCreateKey(request, env, user) {
+  try {
+    const body = await request.json();
+    const { api_url, token, enabled, remark, expires_at } = body;
+    if (!api_url || !token) {
+      return jsonResponse({ error: "API URL \u548C Token \u4E0D\u80FD\u4E3A\u7A7A" }, 400);
+    }
+    const result = await createUserKey(env, user.userId, {
+      apiUrl: api_url,
+      token,
+      enabled: enabled !== false,
+      remark: remark || null,
+      expiresAt: expires_at || null
+    });
+    if (!result.success) {
+      return jsonResponse({ error: result.error }, 500);
+    }
+    return jsonResponse({ success: true, data: result.data });
+  } catch {
+    return jsonResponse({ error: "\u8BF7\u6C42\u683C\u5F0F\u9519\u8BEF" }, 400);
+  }
+}
+async function handleUpdateKey(request, env, user, keyId) {
+  try {
+    const body = await request.json();
+    const updates = {};
+    if ("api_url" in body) updates.api_url = body.api_url;
+    if ("token" in body) updates.token = body.token;
+    if ("enabled" in body) updates.enabled = body.enabled;
+    if ("remark" in body) updates.remark = body.remark;
+    if ("expires_at" in body) updates.expires_at = body.expires_at;
+    if (Object.keys(updates).length === 0) {
+      return jsonResponse({ error: "\u6CA1\u6709\u9700\u8981\u66F4\u65B0\u7684\u5B57\u6BB5" }, 400);
+    }
+    const result = await updateUserKey(env, parseInt(keyId), user.userId, updates);
+    if (!result.success) {
+      return jsonResponse({ error: result.error }, 500);
+    }
+    return jsonResponse({ success: true });
+  } catch {
+    return jsonResponse({ error: "\u8BF7\u6C42\u683C\u5F0F\u9519\u8BEF" }, 400);
+  }
+}
+async function handleDeleteKey(env, user, keyId) {
+  const result = await deleteUserKey(env, parseInt(keyId), user.userId);
+  if (!result.success) {
+    return jsonResponse({ error: result.error }, 500);
+  }
+  return jsonResponse({ success: true });
+}
+async function handleGenerateSkAlias(env, user, keyId) {
+  const skAlias = generateSkAlias();
+  const result = await updateUserKeySkAlias(env, parseInt(keyId), user.userId, skAlias);
+  if (!result.success) {
+    return jsonResponse({ error: result.error }, 500);
+  }
+  return jsonResponse({ success: true, sk_alias: skAlias });
+}
+async function handleGetUsage(env, url, user) {
+  const limit = parseInt(url.searchParams.get("limit") || "20", 10);
+  const offset = parseInt(url.searchParams.get("offset") || "0", 10);
+  const records = await getUserUsageRecords(env, user.userId, limit, offset);
+  return jsonResponse({ records });
+}
+async function handleGetTransactions(env, url, user) {
+  const limit = parseInt(url.searchParams.get("limit") || "20", 10);
+  const offset = parseInt(url.searchParams.get("offset") || "0", 10);
+  const transactions = await getUserTransactions(env, user.userId, limit, offset);
+  return jsonResponse({ transactions });
+}
+async function handleTopup(request, env, user) {
+  try {
+    const body = await request.json();
+    const amount = parseFloat(body.amount);
+    if (!amount || amount < 1) {
+      return jsonResponse({ error: "\u5145\u503C\u91D1\u989D\u81F3\u5C11 $1" }, 400);
+    }
+    const dbUser = await getUserById(env, user.userId);
+    const result = await createCheckoutSession(env, {
+      userId: user.userId,
+      userEmail: dbUser.email,
+      amount
+    });
+    if (!result.success) {
+      return jsonResponse({ error: result.error }, 500);
+    }
+    await createStripeSession(env, {
+      userId: user.userId,
+      sessionId: result.sessionId,
+      amount
+    });
+    return jsonResponse({ success: true, url: result.url });
+  } catch {
+    return jsonResponse({ error: "\u8BF7\u6C42\u683C\u5F0F\u9519\u8BEF" }, 400);
+  }
+}
+async function handleGetPricing(env) {
+  const rules = await getAllPricingRules(env);
+  return jsonResponse({ rules });
+}
+
+// src/handlers/admin-user-api.js
+init_user_db();
+async function handleAdminPricingApi(request, env, url) {
+  if (!verifyAdmin(request, env)) {
+    return jsonResponse({ error: "\u672A\u6388\u6743" }, 401);
+  }
+  const path = url.pathname;
+  if (path === "/api/admin/pricing" && request.method === "GET") {
+    const rules = await getAllPricingRules(env);
+    return jsonResponse({ rules });
+  }
+  if (path === "/api/admin/pricing" && request.method === "POST") {
+    return handleCreatePricing(request, env);
+  }
+  if (path.match(/^\/api\/admin\/pricing\/\d+$/) && request.method === "PATCH") {
+    const ruleId = parseInt(path.split("/").pop(), 10);
+    return handleUpdatePricing(request, env, ruleId);
+  }
+  if (path.match(/^\/api\/admin\/pricing\/\d+$/) && request.method === "DELETE") {
+    const ruleId = parseInt(path.split("/").pop(), 10);
+    const result = await deletePricingRule(env, ruleId);
+    if (!result.success) return jsonResponse({ error: result.error }, 500);
+    return jsonResponse({ success: true });
+  }
+  if (path === "/api/admin/usage" && request.method === "GET") {
+    const limit = parseInt(url.searchParams.get("limit") || "50", 10);
+    const offset = parseInt(url.searchParams.get("offset") || "0", 10);
+    const records = await getAllUsageRecords(env, limit, offset);
+    return jsonResponse({ records });
+  }
+  if (path === "/api/admin/transactions" && request.method === "GET") {
+    const limit = parseInt(url.searchParams.get("limit") || "50", 10);
+    const offset = parseInt(url.searchParams.get("offset") || "0", 10);
+    const transactions = await getAllTransactions(env, limit, offset);
+    return jsonResponse({ transactions });
+  }
+  return jsonResponse({ error: "Not found" }, 404);
+}
+async function handleCreatePricing(request, env) {
+  try {
+    const body = await request.json();
+    const { api_url, model_pattern, input_rate, output_rate, is_default } = body;
+    if (!api_url) {
+      return jsonResponse({ error: "API URL \u4E0D\u80FD\u4E3A\u7A7A" }, 400);
+    }
+    const result = await createPricingRule(env, {
+      apiUrl: api_url,
+      modelPattern: model_pattern || "*",
+      inputRate: parseFloat(input_rate) || 0,
+      outputRate: parseFloat(output_rate) || 0,
+      isDefault: is_default || false
+    });
+    if (!result.success) return jsonResponse({ error: result.error }, 500);
+    return jsonResponse({ success: true, data: result.data });
+  } catch {
+    return jsonResponse({ error: "\u8BF7\u6C42\u683C\u5F0F\u9519\u8BEF" }, 400);
+  }
+}
+async function handleUpdatePricing(request, env, ruleId) {
+  try {
+    const body = await request.json();
+    const updates = {};
+    if ("api_url" in body) updates.api_url = body.api_url;
+    if ("model_pattern" in body) updates.model_pattern = body.model_pattern;
+    if ("input_rate" in body) updates.input_rate = parseFloat(body.input_rate);
+    if ("output_rate" in body) updates.output_rate = parseFloat(body.output_rate);
+    if ("is_default" in body) updates.is_default = body.is_default;
+    const result = await updatePricingRule(env, ruleId, updates);
+    if (!result.success) return jsonResponse({ error: result.error }, 500);
+    return jsonResponse({ success: true });
+  } catch {
+    return jsonResponse({ error: "\u8BF7\u6C42\u683C\u5F0F\u9519\u8BEF" }, 400);
   }
 }
 
@@ -1235,6 +2645,7 @@ function getStatusHtml() {
     </div>
     <div class="buttons">
       <a href="/docs" class="btn btn-primary"><i class="fas fa-book"></i>\u4F7F\u7528\u6587\u6863</a>
+      <a href="/dashboard" class="btn btn-primary" style="background: linear-gradient(135deg, #10b981 0%, #059669 100%); box-shadow: 0 4px 15px rgba(16,185,129,0.4);"><i class="fas fa-user"></i>\u7528\u6237\u4E2D\u5FC3</a>
       <a href="/admin" class="btn btn-secondary"><i class="fas fa-cog"></i>\u7BA1\u7406\u9762\u677F</a>
       <a href="https://github.com/dext7r/anyrouter" target="_blank" class="btn btn-secondary"><i class="fab fa-github"></i>GitHub</a>
     </div>
@@ -1495,6 +2906,54 @@ function getAdminHtml() {
           </table>
         </div>
         <div id="pagination"></div>
+      </div>
+
+      <!-- \u7528\u6237\u7BA1\u7406 & \u5B9A\u4EF7\u89C4\u5219 Tab -->
+      <div class="glass-effect rounded-2xl shadow-xl mini-card mt-6">
+        <div class="flex border-b border-purple-200 mb-4">
+          <button onclick="showAdminTab('users')" class="admin-tab flex-1 py-3 text-center font-medium text-sm transition-all" data-tab="users"><i class="fas fa-users mr-1"></i>\u7528\u6237\u7BA1\u7406</button>
+          <button onclick="showAdminTab('pricing')" class="admin-tab flex-1 py-3 text-center font-medium text-sm transition-all" data-tab="pricing"><i class="fas fa-tags mr-1"></i>\u5B9A\u4EF7\u89C4\u5219</button>
+        </div>
+        <!-- \u7528\u6237\u7BA1\u7406 -->
+        <div id="adminTabUsers">
+          <div class="overflow-x-auto">
+            <table class="w-full mini-table">
+              <thead><tr class="border-b border-purple-200">
+                <th class="text-left py-2 px-2 text-xs font-medium text-gray-600">ID</th>
+                <th class="text-left py-2 px-2 text-xs font-medium text-gray-600">\u90AE\u7BB1</th>
+                <th class="text-left py-2 px-2 text-xs font-medium text-gray-600">\u6635\u79F0</th>
+                <th class="text-center py-2 px-2 text-xs font-medium text-gray-600">\u4F59\u989D</th>
+                <th class="text-center py-2 px-2 text-xs font-medium text-gray-600">\u72B6\u6001</th>
+                <th class="text-left py-2 px-2 text-xs font-medium text-gray-600">\u6CE8\u518C\u65F6\u95F4</th>
+                <th class="text-center py-2 px-2 text-xs font-medium text-gray-600">\u64CD\u4F5C</th>
+              </tr></thead>
+              <tbody id="usersTableBody"><tr><td colspan="7" class="text-center text-gray-400 py-4 text-sm">\u70B9\u51FB\u4E0A\u65B9\u6807\u7B7E\u52A0\u8F7D</td></tr></tbody>
+            </table>
+          </div>
+        </div>
+        <!-- \u5B9A\u4EF7\u89C4\u5219 -->
+        <div id="adminTabPricing" class="hidden">
+          <div class="grid grid-cols-1 md:grid-cols-5 gap-3 mb-4 p-3 bg-purple-50 rounded-lg">
+            <input type="url" id="priceApiUrl" placeholder="API URL" class="mini-input border border-gray-200 rounded-lg">
+            <input type="text" id="priceModel" placeholder="\u6A21\u578B\u5339\u914D (\u5982 gpt-4*)" class="mini-input border border-gray-200 rounded-lg">
+            <input type="number" step="0.0001" id="priceInputRate" placeholder="\u8F93\u5165\u4EF7\u683C/1K" class="mini-input border border-gray-200 rounded-lg">
+            <input type="number" step="0.0001" id="priceOutputRate" placeholder="\u8F93\u51FA\u4EF7\u683C/1K" class="mini-input border border-gray-200 rounded-lg">
+            <button onclick="addPricingRule()" class="mini-btn btn-primary text-white rounded-lg font-medium"><i class="fas fa-plus mr-1"></i>\u6DFB\u52A0</button>
+          </div>
+          <div class="overflow-x-auto">
+            <table class="w-full mini-table">
+              <thead><tr class="border-b border-purple-200">
+                <th class="text-left py-2 px-2 text-xs font-medium text-gray-600">API URL</th>
+                <th class="text-left py-2 px-2 text-xs font-medium text-gray-600">\u6A21\u578B</th>
+                <th class="text-center py-2 px-2 text-xs font-medium text-gray-600">\u8F93\u5165/1K</th>
+                <th class="text-center py-2 px-2 text-xs font-medium text-gray-600">\u8F93\u51FA/1K</th>
+                <th class="text-center py-2 px-2 text-xs font-medium text-gray-600">\u9ED8\u8BA4</th>
+                <th class="text-center py-2 px-2 text-xs font-medium text-gray-600">\u64CD\u4F5C</th>
+              </tr></thead>
+              <tbody id="pricingTableBody"><tr><td colspan="6" class="text-center text-gray-400 py-4 text-sm">\u70B9\u51FB\u4E0A\u65B9\u6807\u7B7E\u52A0\u8F7D</td></tr></tbody>
+            </table>
+          </div>
+        </div>
       </div>
     </div>
   </div>
@@ -2107,6 +3566,101 @@ function getAdminHtml() {
         $('#blacklistContent').html('<div class="text-xs text-red-400 text-center py-4">\u52A0\u8F7D\u5931\u8D25</div>');
       }
     }
+
+    // ============ \u7528\u6237\u7BA1\u7406 & \u5B9A\u4EF7\u89C4\u5219 ============
+    function showAdminTab(tab) {
+      $('.admin-tab').removeClass('bg-purple-100 text-purple-700 border-b-2 border-purple-600')
+      $('[data-tab="' + tab + '"]').addClass('bg-purple-100 text-purple-700 border-b-2 border-purple-600')
+      if (tab === 'users') { $('#adminTabUsers').removeClass('hidden'); $('#adminTabPricing').addClass('hidden'); loadUsers(); }
+      else { $('#adminTabPricing').removeClass('hidden'); $('#adminTabUsers').addClass('hidden'); loadPricingRules(); }
+    }
+
+    async function loadUsers() {
+      try {
+        const res = await apiGet('/api/admin/users')
+        if (res && res.users) {
+          let html = res.users.map(u => '<tr class="border-b hover:bg-gray-50">'
+            + '<td class="py-2 px-2 text-xs text-gray-500">' + u.id + '</td>'
+            + '<td class="py-2 px-2 text-xs">' + esc(u.email) + '</td>'
+            + '<td class="py-2 px-2 text-xs">' + esc(u.display_name || '-') + '</td>'
+            + '<td class="py-2 px-2 text-xs text-center font-medium ' + (u.balance > 0 ? 'text-green-600' : 'text-red-500') + '">$' + parseFloat(u.balance || 0).toFixed(2) + '</td>'
+            + '<td class="py-2 px-2 text-xs text-center"><span class="px-2 py-0.5 rounded-full text-xs ' + (u.status === 'active' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700') + '">' + (u.status === 'active' ? '\u6B63\u5E38' : u.status === 'suspended' ? '\u6682\u505C' : '\u5C01\u7981') + '</span></td>'
+            + '<td class="py-2 px-2 text-xs text-gray-400">' + formatDate(u.created_at) + '</td>'
+            + '<td class="py-2 px-2 text-xs text-center">'
+            + '<button onclick="adjustBalance(' + u.id + ')" class="text-green-600 hover:text-green-800 mr-1" title="\u8C03\u6574\u4F59\u989D"><i class="fas fa-dollar-sign"></i></button>'
+            + '<button onclick="toggleUserStatus(' + u.id + ',\\'' + (u.status === 'active' ? 'suspended' : 'active') + '\\')" class="text-yellow-600 hover:text-yellow-800" title="\u5207\u6362\u72B6\u6001"><i class="fas fa-power-off"></i></button>'
+            + '</td></tr>').join('')
+          $('#usersTableBody').html(html || '<tr><td colspan="7" class="text-center text-gray-400 py-4 text-sm">\u6682\u65E0\u7528\u6237</td></tr>')
+        }
+      } catch { $('#usersTableBody').html('<tr><td colspan="7" class="text-center text-red-400 py-4 text-sm">\u52A0\u8F7D\u5931\u8D25</td></tr>') }
+    }
+
+    async function adjustBalance(userId) {
+      const amount = prompt('\u8F93\u5165\u8C03\u6574\u91D1\u989D\uFF08\u6B63\u6570\u52A0\u4F59\u989D\uFF0C\u8D1F\u6570\u6263\u4F59\u989D\uFF09\uFF1A')
+      if (amount === null || isNaN(parseFloat(amount))) return
+      const desc = prompt('\u5907\u6CE8\u8BF4\u660E\uFF08\u53EF\u9009\uFF09\uFF1A') || ''
+      const res = await fetch('/api/admin/users/' + userId + '/balance', {
+        method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + authToken },
+        body: JSON.stringify({ amount: parseFloat(amount), description: desc })
+      })
+      const data = await res.json()
+      if (data.success) { showToast('\u4F59\u989D\u5DF2\u8C03\u6574', 'success'); loadUsers() }
+      else { showToast(data.error || '\u64CD\u4F5C\u5931\u8D25', 'error') }
+    }
+
+    async function toggleUserStatus(userId, newStatus) {
+      const res = await fetch('/api/admin/users/' + userId, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + authToken },
+        body: JSON.stringify({ status: newStatus })
+      })
+      const data = await res.json()
+      if (data.success) { showToast('\u72B6\u6001\u5DF2\u66F4\u65B0', 'success'); loadUsers() }
+      else { showToast(data.error || '\u64CD\u4F5C\u5931\u8D25', 'error') }
+    }
+
+    async function loadPricingRules() {
+      try {
+        const res = await apiGet('/api/admin/pricing')
+        if (res && res.rules) {
+          let html = res.rules.map(r => '<tr class="border-b hover:bg-gray-50">'
+            + '<td class="py-2 px-2 text-xs">' + esc(r.api_url) + '</td>'
+            + '<td class="py-2 px-2 text-xs font-mono">' + esc(r.model_pattern) + '</td>'
+            + '<td class="py-2 px-2 text-xs text-center">$' + parseFloat(r.input_rate).toFixed(4) + '</td>'
+            + '<td class="py-2 px-2 text-xs text-center">$' + parseFloat(r.output_rate).toFixed(4) + '</td>'
+            + '<td class="py-2 px-2 text-xs text-center">' + (r.is_default ? '<i class="fas fa-check text-green-500"></i>' : '-') + '</td>'
+            + '<td class="py-2 px-2 text-xs text-center"><button onclick="deletePricingRule(' + r.id + ')" class="text-red-500 hover:text-red-700"><i class="fas fa-trash"></i></button></td>'
+            + '</tr>').join('')
+          $('#pricingTableBody').html(html || '<tr><td colspan="6" class="text-center text-gray-400 py-4 text-sm">\u6682\u65E0\u5B9A\u4EF7\u89C4\u5219</td></tr>')
+        }
+      } catch { $('#pricingTableBody').html('<tr><td colspan="6" class="text-center text-red-400 py-4 text-sm">\u52A0\u8F7D\u5931\u8D25</td></tr>') }
+    }
+
+    async function addPricingRule() {
+      const api_url = $('#priceApiUrl').val().trim()
+      const model_pattern = $('#priceModel').val().trim() || '*'
+      const input_rate = parseFloat($('#priceInputRate').val()) || 0
+      const output_rate = parseFloat($('#priceOutputRate').val()) || 0
+      if (!api_url) { showToast('\u8BF7\u586B\u5199 API URL', 'error'); return }
+      const res = await fetch('/api/admin/pricing', {
+        method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + authToken },
+        body: JSON.stringify({ api_url, model_pattern, input_rate, output_rate, is_default: model_pattern === '*' })
+      })
+      const data = await res.json()
+      if (data.success) { showToast('\u89C4\u5219\u5DF2\u6DFB\u52A0', 'success'); $('#priceApiUrl,#priceModel,#priceInputRate,#priceOutputRate').val(''); loadPricingRules() }
+      else { showToast(data.error || '\u6DFB\u52A0\u5931\u8D25', 'error') }
+    }
+
+    async function deletePricingRule(id) {
+      if (!confirm('\u786E\u5B9A\u5220\u9664\u6B64\u5B9A\u4EF7\u89C4\u5219\uFF1F')) return
+      const res = await fetch('/api/admin/pricing/' + id, {
+        method: 'DELETE', headers: { 'Authorization': 'Bearer ' + authToken }
+      })
+      const data = await res.json()
+      if (data.success) { showToast('\u5DF2\u5220\u9664', 'success'); loadPricingRules() }
+      else { showToast(data.error || '\u5220\u9664\u5931\u8D25', 'error') }
+    }
+
+    function esc(s) { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;') }
   <\/script>
 </body>
 </html>`;
@@ -3319,6 +4873,561 @@ jobs:
 </html>`;
 }
 
+// src/pages/dashboard.js
+function getDashboardHtml() {
+  return `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AnyRouter - \u7528\u6237\u4E2D\u5FC3</title>
+  <script src="https://cdn.tailwindcss.com"><\/script>
+  <script src="https://code.jquery.com/jquery-3.7.1.min.js"><\/script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    * { font-family: 'Inter', system-ui, -apple-system, sans-serif; }
+    .glass { background: rgba(255,255,255,0.95); backdrop-filter: blur(10px); border: 1px solid rgba(255,255,255,0.2); }
+    .gradient-bg { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); }
+    .card-hover:hover { transform: translateY(-2px); box-shadow: 0 12px 24px rgba(0,0,0,0.15); }
+    .toast { position: fixed; top: 20px; right: 20px; z-index: 9999; padding: 12px 20px; border-radius: 8px; color: white; font-size: 14px; animation: slideIn 0.3s ease; }
+    @keyframes slideIn { from { transform: translateX(100px); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+    .toast-success { background: #10b981; }
+    .toast-error { background: #ef4444; }
+    .tab-btn.active { background: rgba(102,126,234,0.15); color: #667eea; border-bottom: 2px solid #667eea; }
+  </style>
+</head>
+<body class="gradient-bg min-h-screen">
+  <div id="app" class="max-w-5xl mx-auto px-4 py-8">
+    <!-- \u9876\u90E8\u5BFC\u822A -->
+    <div class="flex items-center justify-between mb-8">
+      <div class="flex items-center gap-3">
+        <div class="w-10 h-10 rounded-xl bg-white/20 flex items-center justify-center">
+          <i class="fas fa-route text-white text-lg"></i>
+        </div>
+        <h1 class="text-2xl font-bold text-white">AnyRouter \u7528\u6237\u4E2D\u5FC3</h1>
+      </div>
+      <div class="flex items-center gap-3">
+        <a href="/" class="text-white/80 hover:text-white text-sm"><i class="fas fa-home mr-1"></i>\u9996\u9875</a>
+        <a href="/docs" class="text-white/80 hover:text-white text-sm"><i class="fas fa-book mr-1"></i>\u6587\u6863</a>
+        <button onclick="logout()" class="px-4 py-2 rounded-lg bg-white/20 text-white text-sm hover:bg-white/30 transition">
+          <i class="fas fa-sign-out-alt mr-1"></i>\u9000\u51FA\u767B\u5F55
+        </button>
+      </div>
+    </div>
+
+    <!-- \u767B\u5F55/\u6CE8\u518C\u8868\u5355 -->
+    <div id="authForm" class="glass rounded-2xl p-8 max-w-md mx-auto">
+      <div class="flex mb-6">
+        <button onclick="showTab('login')" class="tab-btn flex-1 py-3 text-center font-medium rounded-lg transition" data-tab="login">\u767B\u5F55</button>
+        <button onclick="showTab('register')" class="tab-btn flex-1 py-3 text-center font-medium rounded-lg transition" data-tab="register">\u6CE8\u518C</button>
+      </div>
+      <!-- \u767B\u5F55 -->
+      <div id="loginForm">
+        <div class="mb-4">
+          <label class="block text-sm font-medium text-gray-700 mb-1">\u90AE\u7BB1</label>
+          <input type="email" id="loginEmail" class="w-full px-4 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none" placeholder="your@email.com">
+        </div>
+        <div class="mb-6">
+          <label class="block text-sm font-medium text-gray-700 mb-1">\u5BC6\u7801</label>
+          <input type="password" id="loginPassword" class="w-full px-4 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none" placeholder="\u8F93\u5165\u5BC6\u7801">
+        </div>
+        <button onclick="login()" class="w-full py-3 gradient-bg text-white font-medium rounded-lg hover:opacity-90 transition">\u767B\u5F55</button>
+      </div>
+      <!-- \u6CE8\u518C -->
+      <div id="registerForm" class="hidden">
+        <div class="mb-4">
+          <label class="block text-sm font-medium text-gray-700 mb-1">\u90AE\u7BB1</label>
+          <input type="email" id="regEmail" class="w-full px-4 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none" placeholder="your@email.com">
+        </div>
+        <div class="mb-4">
+          <label class="block text-sm font-medium text-gray-700 mb-1">\u5BC6\u7801</label>
+          <input type="password" id="regPassword" class="w-full px-4 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none" placeholder="\u81F3\u5C11 8 \u4F4D">
+        </div>
+        <div class="mb-6">
+          <label class="block text-sm font-medium text-gray-700 mb-1">\u6635\u79F0\uFF08\u53EF\u9009\uFF09</label>
+          <input type="text" id="regName" class="w-full px-4 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none" placeholder="\u4F60\u7684\u6635\u79F0">
+        </div>
+        <button onclick="register()" class="w-full py-3 gradient-bg text-white font-medium rounded-lg hover:opacity-90 transition">\u6CE8\u518C</button>
+      </div>
+    </div>
+
+    <!-- \u4E3B\u9762\u677F\uFF08\u767B\u5F55\u540E\u663E\u793A\uFF09 -->
+    <div id="mainPanel" class="hidden">
+      <!-- \u4FE1\u606F\u5361\u7247 -->
+      <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-6">
+        <div class="glass rounded-xl p-6 card-hover transition-all duration-300">
+          <div class="flex items-center gap-3 mb-2">
+            <div class="w-10 h-10 rounded-lg bg-indigo-100 flex items-center justify-center">
+              <i class="fas fa-user text-indigo-600"></i>
+            </div>
+            <div>
+              <div class="text-sm text-gray-500">\u7528\u6237\u4FE1\u606F</div>
+              <div class="font-semibold" id="userEmail">-</div>
+            </div>
+          </div>
+          <div class="text-xs text-gray-400 mt-2">
+            API Key: <code id="userApiKey" class="bg-gray-100 px-1 rounded text-xs cursor-pointer" onclick="copyText(this.textContent)" title="\u70B9\u51FB\u590D\u5236">-</code>
+          </div>
+        </div>
+
+        <div class="glass rounded-xl p-6 card-hover transition-all duration-300">
+          <div class="flex items-center gap-3 mb-2">
+            <div class="w-10 h-10 rounded-lg bg-green-100 flex items-center justify-center">
+              <i class="fas fa-wallet text-green-600"></i>
+            </div>
+            <div>
+              <div class="text-sm text-gray-500">\u8D26\u6237\u4F59\u989D</div>
+              <div class="text-2xl font-bold text-green-600">$<span id="userBalance">0.00</span></div>
+            </div>
+          </div>
+          <button onclick="showTopupModal()" class="mt-2 px-4 py-1.5 bg-green-500 text-white text-sm rounded-lg hover:bg-green-600 transition">
+            <i class="fas fa-plus mr-1"></i>\u5145\u503C
+          </button>
+        </div>
+
+        <div class="glass rounded-xl p-6 card-hover transition-all duration-300">
+          <div class="flex items-center gap-3 mb-2">
+            <div class="w-10 h-10 rounded-lg bg-purple-100 flex items-center justify-center">
+              <i class="fas fa-key text-purple-600"></i>
+            </div>
+            <div>
+              <div class="text-sm text-gray-500">\u6211\u7684\u5BC6\u94A5</div>
+              <div class="text-2xl font-bold" id="keyCount">0</div>
+            </div>
+          </div>
+          <button onclick="showAddKeyModal()" class="mt-2 px-4 py-1.5 bg-purple-500 text-white text-sm rounded-lg hover:bg-purple-600 transition">
+            <i class="fas fa-plus mr-1"></i>\u6DFB\u52A0
+          </button>
+        </div>
+      </div>
+
+      <!-- Tab \u5207\u6362 -->
+      <div class="glass rounded-xl overflow-hidden">
+        <div class="flex border-b">
+          <button onclick="showPanel('keys')" class="panel-tab flex-1 py-3 text-center font-medium text-sm transition hover:bg-gray-50" data-panel="keys">
+            <i class="fas fa-key mr-1"></i>\u6211\u7684\u5BC6\u94A5
+          </button>
+          <button onclick="showPanel('usage')" class="panel-tab flex-1 py-3 text-center font-medium text-sm transition hover:bg-gray-50" data-panel="usage">
+            <i class="fas fa-chart-bar mr-1"></i>\u7528\u91CF\u8BB0\u5F55
+          </button>
+          <button onclick="showPanel('transactions')" class="panel-tab flex-1 py-3 text-center font-medium text-sm transition hover:bg-gray-50" data-panel="transactions">
+            <i class="fas fa-exchange-alt mr-1"></i>\u4EA4\u6613\u8BB0\u5F55
+          </button>
+          <button onclick="showPanel('pricing')" class="panel-tab flex-1 py-3 text-center font-medium text-sm transition hover:bg-gray-50" data-panel="pricing">
+            <i class="fas fa-tags mr-1"></i>\u4EF7\u683C\u8868
+          </button>
+        </div>
+
+        <!-- \u5BC6\u94A5\u7BA1\u7406 -->
+        <div id="panelKeys" class="p-6">
+          <div id="keysTable" class="overflow-x-auto">
+            <table class="w-full text-sm">
+              <thead><tr class="border-b text-gray-500">
+                <th class="text-left py-2">API URL</th>
+                <th class="text-left py-2">Token</th>
+                <th class="text-left py-2">SK \u522B\u540D</th>
+                <th class="text-left py-2">\u72B6\u6001</th>
+                <th class="text-left py-2">\u64CD\u4F5C</th>
+              </tr></thead>
+              <tbody id="keysBody"></tbody>
+            </table>
+          </div>
+          <div id="noKeys" class="text-center py-8 text-gray-400">
+            <i class="fas fa-key text-3xl mb-3"></i>
+            <p>\u8FD8\u6CA1\u6709\u6DFB\u52A0\u5BC6\u94A5\uFF0C\u70B9\u51FB\u4E0A\u65B9"\u6DFB\u52A0"\u6309\u94AE\u5F00\u59CB</p>
+          </div>
+        </div>
+
+        <!-- \u7528\u91CF\u8BB0\u5F55 -->
+        <div id="panelUsage" class="p-6 hidden">
+          <table class="w-full text-sm">
+            <thead><tr class="border-b text-gray-500">
+              <th class="text-left py-2">\u65F6\u95F4</th>
+              <th class="text-left py-2">\u6A21\u578B</th>
+              <th class="text-left py-2">\u8F93\u5165</th>
+              <th class="text-left py-2">\u8F93\u51FA</th>
+              <th class="text-left py-2">\u8D39\u7528</th>
+            </tr></thead>
+            <tbody id="usageBody"></tbody>
+          </table>
+        </div>
+
+        <!-- \u4EA4\u6613\u8BB0\u5F55 -->
+        <div id="panelTransactions" class="p-6 hidden">
+          <table class="w-full text-sm">
+            <thead><tr class="border-b text-gray-500">
+              <th class="text-left py-2">\u65F6\u95F4</th>
+              <th class="text-left py-2">\u7C7B\u578B</th>
+              <th class="text-left py-2">\u91D1\u989D</th>
+              <th class="text-left py-2">\u4F59\u989D</th>
+              <th class="text-left py-2">\u8BF4\u660E</th>
+            </tr></thead>
+            <tbody id="transactionsBody"></tbody>
+          </table>
+        </div>
+
+        <!-- \u4EF7\u683C\u8868 -->
+        <div id="panelPricing" class="p-6 hidden">
+          <table class="w-full text-sm">
+            <thead><tr class="border-b text-gray-500">
+              <th class="text-left py-2">API</th>
+              <th class="text-left py-2">\u6A21\u578B</th>
+              <th class="text-left py-2">\u8F93\u5165\u4EF7\u683C/1K</th>
+              <th class="text-left py-2">\u8F93\u51FA\u4EF7\u683C/1K</th>
+            </tr></thead>
+            <tbody id="pricingBody"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- \u5145\u503C\u5F39\u7A97 -->
+  <div id="topupModal" class="fixed inset-0 bg-black/50 flex items-center justify-center z-50 hidden">
+    <div class="glass rounded-2xl p-8 w-full max-w-sm mx-4">
+      <h3 class="text-lg font-bold mb-4">\u4F59\u989D\u5145\u503C</h3>
+      <div class="grid grid-cols-2 gap-3 mb-4">
+        <button onclick="selectAmount(5)" class="amount-btn py-3 border-2 border-gray-200 rounded-lg font-medium hover:border-indigo-500 transition">$5</button>
+        <button onclick="selectAmount(10)" class="amount-btn py-3 border-2 border-gray-200 rounded-lg font-medium hover:border-indigo-500 transition">$10</button>
+        <button onclick="selectAmount(50)" class="amount-btn py-3 border-2 border-gray-200 rounded-lg font-medium hover:border-indigo-500 transition">$50</button>
+        <button onclick="selectAmount(100)" class="amount-btn py-3 border-2 border-gray-200 rounded-lg font-medium hover:border-indigo-500 transition">$100</button>
+      </div>
+      <div class="mb-4">
+        <input type="number" id="customAmount" class="w-full px-4 py-2 border border-gray-200 rounded-lg" placeholder="\u81EA\u5B9A\u4E49\u91D1\u989D" min="1">
+      </div>
+      <div class="flex gap-3">
+        <button onclick="closeTopupModal()" class="flex-1 py-2 border border-gray-200 rounded-lg text-gray-600 hover:bg-gray-50">\u53D6\u6D88</button>
+        <button onclick="doTopup()" class="flex-1 py-2 gradient-bg text-white rounded-lg hover:opacity-90">\u53BB\u652F\u4ED8</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- \u6DFB\u52A0\u5BC6\u94A5\u5F39\u7A97 -->
+  <div id="addKeyModal" class="fixed inset-0 bg-black/50 flex items-center justify-center z-50 hidden">
+    <div class="glass rounded-2xl p-8 w-full max-w-md mx-4">
+      <h3 class="text-lg font-bold mb-4">\u6DFB\u52A0 API \u5BC6\u94A5</h3>
+      <div class="mb-4">
+        <label class="block text-sm font-medium text-gray-700 mb-1">API URL</label>
+        <input type="url" id="keyApiUrl" class="w-full px-4 py-2 border border-gray-200 rounded-lg" placeholder="https://api.openai.com">
+      </div>
+      <div class="mb-4">
+        <label class="block text-sm font-medium text-gray-700 mb-1">Token</label>
+        <input type="text" id="keyToken" class="w-full px-4 py-2 border border-gray-200 rounded-lg" placeholder="sk-xxx...">
+      </div>
+      <div class="mb-4">
+        <label class="block text-sm font-medium text-gray-700 mb-1">\u5907\u6CE8</label>
+        <input type="text" id="keyRemark" class="w-full px-4 py-2 border border-gray-200 rounded-lg" placeholder="\u53EF\u9009">
+      </div>
+      <div class="flex gap-3">
+        <button onclick="closeAddKeyModal()" class="flex-1 py-2 border border-gray-200 rounded-lg text-gray-600 hover:bg-gray-50">\u53D6\u6D88</button>
+        <button onclick="doAddKey()" class="flex-1 py-2 gradient-bg text-white rounded-lg hover:opacity-90">\u6DFB\u52A0</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    let authToken = localStorage.getItem('userToken')
+    let currentUser = null
+    let selectedAmount = 10
+
+    // \u521D\u59CB\u5316
+    $(document).ready(function() {
+      showTab('login')
+      if (authToken) {
+        loadProfile()
+      }
+    })
+
+    function showTab(tab) {
+      $('.tab-btn').removeClass('active')
+      $('[data-tab="' + tab + '"]').addClass('active')
+      if (tab === 'login') {
+        $('#loginForm').removeClass('hidden')
+        $('#registerForm').addClass('hidden')
+      } else {
+        $('#loginForm').addClass('hidden')
+        $('#registerForm').removeClass('hidden')
+      }
+    }
+
+    function showPanel(panel) {
+      $('.panel-tab').removeClass('active')
+      $('[data-panel="' + panel + '"]').addClass('active')
+      $('#panelKeys, #panelUsage, #panelTransactions, #panelPricing').addClass('hidden')
+      $('#panel' + panel.charAt(0).toUpperCase() + panel.slice(1)).removeClass('hidden')
+    }
+
+    function toast(msg, type) {
+      const el = $('<div class="toast toast-' + type + '">' + msg + '</div>')
+      $('body').append(el)
+      setTimeout(() => el.remove(), 3000)
+    }
+
+    function copyText(text) {
+      navigator.clipboard.writeText(text).then(() => toast('\u5DF2\u590D\u5236', 'success'))
+    }
+
+    async function api(path, method, body) {
+      const opts = {
+        method,
+        headers: { 'Content-Type': 'application/json' }
+      }
+      if (authToken) opts.headers['Authorization'] = 'Bearer ' + authToken
+      if (body) opts.body = JSON.stringify(body)
+      const res = await fetch(path, opts)
+      if (res.status === 401) { logout(); return null }
+      return res.json()
+    }
+
+    // \u8BA4\u8BC1
+    async function login() {
+      const email = $('#loginEmail').val().trim()
+      const password = $('#loginPassword').val()
+      if (!email || !password) { toast('\u8BF7\u586B\u5199\u90AE\u7BB1\u548C\u5BC6\u7801', 'error'); return }
+
+      const res = await api('/api/auth/login', 'POST', { email, password })
+      if (!res) return
+      if (res.success) {
+        authToken = res.token
+        currentUser = res.user
+        localStorage.setItem('userToken', authToken)
+        toast('\u767B\u5F55\u6210\u529F', 'success')
+        loadProfile()
+      } else {
+        toast(res.error || '\u767B\u5F55\u5931\u8D25', 'error')
+      }
+    }
+
+    async function register() {
+      const email = $('#regEmail').val().trim()
+      const password = $('#regPassword').val()
+      const display_name = $('#regName').val().trim()
+      if (!email || !password) { toast('\u8BF7\u586B\u5199\u90AE\u7BB1\u548C\u5BC6\u7801', 'error'); return }
+
+      const res = await api('/api/auth/register', 'POST', { email, password, display_name })
+      if (!res) return
+      if (res.success) {
+        authToken = res.token
+        currentUser = res.user
+        localStorage.setItem('userToken', authToken)
+        toast('\u6CE8\u518C\u6210\u529F', 'success')
+        loadProfile()
+      } else {
+        toast(res.error || '\u6CE8\u518C\u5931\u8D25', 'error')
+      }
+    }
+
+    function logout() {
+      authToken = null
+      currentUser = null
+      localStorage.removeItem('userToken')
+      $('#authForm').removeClass('hidden')
+      $('#mainPanel').addClass('hidden')
+    }
+
+    async function loadProfile() {
+      const res = await api('/api/user/profile', 'GET')
+      if (!res || res.error) { logout(); return }
+
+      currentUser = res
+      $('#userEmail').text(res.email || '-')
+      $('#userApiKey').text(res.api_key || '-')
+      $('#userBalance').text(parseFloat(res.balance || 0).toFixed(2))
+
+      $('#authForm').addClass('hidden')
+      $('#mainPanel').removeClass('hidden')
+
+      loadKeys()
+      showPanel('keys')
+    }
+
+    // \u5BC6\u94A5\u7BA1\u7406
+    async function loadKeys() {
+      const res = await api('/api/user/keys', 'GET')
+      if (!res) return
+
+      const keys = res.keys || []
+      $('#keyCount').text(keys.length)
+      if (keys.length === 0) {
+        $('#keysTable').addClass('hidden')
+        $('#noKeys').removeClass('hidden')
+        return
+      }
+
+      $('#keysTable').removeClass('hidden')
+      $('#noKeys').addClass('hidden')
+
+      let html = ''
+      keys.forEach(k => {
+        html += '<tr class="border-b hover:bg-gray-50">'
+          + '<td class="py-2 pr-2"><span class="text-xs text-gray-500">' + escHtml(k.api_url) + '</span></td>'
+          + '<td class="py-2 pr-2"><code class="text-xs bg-gray-100 px-1 rounded cursor-pointer" onclick="copyText(\\'' + escHtml(k.token) + '\\')">' + escHtml(k.token) + '</code></td>'
+          + '<td class="py-2 pr-2">' + (k.sk_alias ? '<code class="text-xs bg-purple-100 px-1 rounded cursor-pointer" onclick="copyText(\\'' + escHtml(k.sk_alias) + '\\')">' + escHtml(k.sk_alias) + '</code>' : '<span class="text-gray-400 text-xs">\u65E0</span>') + '</td>'
+          + '<td class="py-2 pr-2">' + (k.enabled ? '<span class="text-green-500 text-xs">\u542F\u7528</span>' : '<span class="text-red-500 text-xs">\u7981\u7528</span>') + '</td>'
+          + '<td class="py-2">'
+          + '<button onclick="genSkAlias(' + k.id + ')" class="text-xs text-indigo-600 hover:text-indigo-800 mr-2" title="\u751F\u6210 SK \u522B\u540D"><i class="fas fa-magic"></i></button>'
+          + '<button onclick="toggleKey(' + k.id + ',' + !k.enabled + ')" class="text-xs text-yellow-600 hover:text-yellow-800 mr-2" title="\u5207\u6362\u72B6\u6001"><i class="fas fa-power-off"></i></button>'
+          + '<button onclick="deleteKey(' + k.id + ')" class="text-xs text-red-600 hover:text-red-800" title="\u5220\u9664"><i class="fas fa-trash"></i></button>'
+          + '</td></tr>'
+      })
+      $('#keysBody').html(html)
+    }
+
+    async function genSkAlias(keyId) {
+      const res = await api('/api/user/keys/' + keyId + '/sk-alias', 'POST')
+      if (res && res.success) {
+        toast('SK \u522B\u540D\u5DF2\u751F\u6210: ' + res.sk_alias, 'success')
+        loadKeys()
+      } else {
+        toast(res?.error || '\u751F\u6210\u5931\u8D25', 'error')
+      }
+    }
+
+    async function toggleKey(keyId, enabled) {
+      const res = await api('/api/user/keys/' + keyId, 'PATCH', { enabled })
+      if (res && res.success) {
+        toast(enabled ? '\u5DF2\u542F\u7528' : '\u5DF2\u7981\u7528', 'success')
+        loadKeys()
+      }
+    }
+
+    async function deleteKey(keyId) {
+      if (!confirm('\u786E\u5B9A\u5220\u9664\u6B64\u5BC6\u94A5\uFF1F')) return
+      const res = await api('/api/user/keys/' + keyId, 'DELETE')
+      if (res && res.success) {
+        toast('\u5DF2\u5220\u9664', 'success')
+        loadKeys()
+      }
+    }
+
+    function showAddKeyModal() { $('#addKeyModal').removeClass('hidden') }
+    function closeAddKeyModal() { $('#addKeyModal').addClass('hidden') }
+
+    async function doAddKey() {
+      const api_url = $('#keyApiUrl').val().trim()
+      const token = $('#keyToken').val().trim()
+      const remark = $('#keyRemark').val().trim()
+      if (!api_url || !token) { toast('\u8BF7\u586B\u5199 API URL \u548C Token', 'error'); return }
+
+      const res = await api('/api/user/keys', 'POST', { api_url, token, remark })
+      if (res && res.success) {
+        toast('\u5BC6\u94A5\u6DFB\u52A0\u6210\u529F', 'success')
+        closeAddKeyModal()
+        $('#keyApiUrl, #keyToken, #keyRemark').val('')
+        loadKeys()
+      } else {
+        toast(res?.error || '\u6DFB\u52A0\u5931\u8D25', 'error')
+      }
+    }
+
+    // \u5145\u503C
+    let selectedTopupAmount = 10
+
+    function showTopupModal() { $('#topupModal').removeClass('hidden') }
+    function closeTopupModal() { $('#topupModal').addClass('hidden') }
+
+    function selectAmount(amt) {
+      selectedTopupAmount = amt
+      $('#customAmount').val('')
+      $('.amount-btn').removeClass('border-indigo-500 bg-indigo-50')
+      event.target.classList.add('border-indigo-500', 'bg-indigo-50')
+    }
+
+    async function doTopup() {
+      const custom = parseFloat($('#customAmount').val())
+      const amount = custom > 0 ? custom : selectedTopupAmount
+      if (!amount || amount < 1) { toast('\u8BF7\u9009\u62E9\u6216\u8F93\u5165\u91D1\u989D', 'error'); return }
+
+      const res = await api('/api/user/topup', 'POST', { amount })
+      if (res && res.success && res.url) {
+        window.location.href = res.url
+      } else {
+        toast(res?.error || '\u521B\u5EFA\u652F\u4ED8\u5931\u8D25', 'error')
+      }
+    }
+
+    // \u7528\u91CF\u8BB0\u5F55
+    async function loadUsage() {
+      const res = await api('/api/user/usage?limit=20', 'GET')
+      if (!res) return
+      let html = ''
+      ;(res.records || []).forEach(r => {
+        html += '<tr class="border-b hover:bg-gray-50">'
+          + '<td class="py-2 text-xs text-gray-500">' + formatDate(r.created_at) + '</td>'
+          + '<td class="py-2 text-xs">' + escHtml(r.model || '-') + '</td>'
+          + '<td class="py-2 text-xs">' + (r.input_tokens || 0) + '</td>'
+          + '<td class="py-2 text-xs">' + (r.output_tokens || 0) + '</td>'
+          + '<td class="py-2 text-xs text-red-500">$' + parseFloat(r.cost || 0).toFixed(6) + '</td>'
+          + '</tr>'
+      })
+      $('#usageBody').html(html || '<tr><td colspan="5" class="py-4 text-center text-gray-400">\u6682\u65E0\u8BB0\u5F55</td></tr>')
+    }
+
+    // \u4EA4\u6613\u8BB0\u5F55
+    async function loadTransactions() {
+      const res = await api('/api/user/transactions?limit=20', 'GET')
+      if (!res) return
+      let html = ''
+      ;(res.transactions || []).forEach(t => {
+        const typeMap = { topup: '\u5145\u503C', usage: '\u6D88\u8D39', refund: '\u9000\u6B3E', admin_adjust: '\u7BA1\u7406\u5458\u8C03\u6574' }
+        const color = t.amount > 0 ? 'text-green-500' : 'text-red-500'
+        html += '<tr class="border-b hover:bg-gray-50">'
+          + '<td class="py-2 text-xs text-gray-500">' + formatDate(t.created_at) + '</td>'
+          + '<td class="py-2 text-xs">' + (typeMap[t.type] || t.type) + '</td>'
+          + '<td class="py-2 text-xs ' + color + '">' + (t.amount > 0 ? '+' : '') + parseFloat(t.amount).toFixed(4) + '</td>'
+          + '<td class="py-2 text-xs">$' + parseFloat(t.balance_after).toFixed(4) + '</td>'
+          + '<td class="py-2 text-xs text-gray-500">' + escHtml(t.description || '') + '</td>'
+          + '</tr>'
+      })
+      $('#transactionsBody').html(html || '<tr><td colspan="5" class="py-4 text-center text-gray-400">\u6682\u65E0\u8BB0\u5F55</td></tr>')
+    }
+
+    // \u5B9A\u4EF7\u8868
+    async function loadPricing() {
+      const res = await api('/api/user/pricing', 'GET')
+      if (!res) return
+      let html = ''
+      ;(res.rules || []).forEach(r => {
+        html += '<tr class="border-b hover:bg-gray-50">'
+          + '<td class="py-2 text-xs">' + escHtml(r.api_url) + '</td>'
+          + '<td class="py-2 text-xs font-mono">' + escHtml(r.model_pattern) + '</td>'
+          + '<td class="py-2 text-xs">$' + parseFloat(r.input_rate).toFixed(4) + '</td>'
+          + '<td class="py-2 text-xs">$' + parseFloat(r.output_rate).toFixed(4) + '</td>'
+          + '</tr>'
+      })
+      $('#pricingBody').html(html || '<tr><td colspan="4" class="py-4 text-center text-gray-400">\u6682\u65E0\u5B9A\u4EF7\u89C4\u5219</td></tr>')
+    }
+
+    // \u61D2\u52A0\u8F7D\u6570\u636E
+    const origShowPanel = showPanel
+    showPanel = function(panel) {
+      origShowPanel(panel)
+      if (panel === 'usage') loadUsage()
+      if (panel === 'transactions') loadTransactions()
+      if (panel === 'pricing') loadPricing()
+    }
+
+    // \u5DE5\u5177\u51FD\u6570
+    function escHtml(s) { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;') }
+    function formatDate(d) { if (!d) return '-'; return new Date(d).toLocaleString('zh-CN') }
+
+    // URL \u53C2\u6570\u68C0\u6D4B
+    const params = new URLSearchParams(window.location.search)
+    if (params.get('topup') === 'success') {
+      toast('\u5145\u503C\u6210\u529F\uFF01\u4F59\u989D\u5C06\u5728\u51E0\u79D2\u5185\u66F4\u65B0', 'success')
+      window.history.replaceState({}, '', '/dashboard')
+      if (authToken) setTimeout(loadProfile, 2000)
+    }
+    if (params.get('topup') === 'cancel') {
+      toast('\u5145\u503C\u5DF2\u53D6\u6D88', 'error')
+      window.history.replaceState({}, '', '/dashboard')
+    }
+  <\/script>
+</body>
+</html>`;
+}
+
 // src/index.js
 var index_default = {
   async fetch(request, env, ctx) {
@@ -3335,10 +5444,27 @@ async function handleRequest(request, env, ctx) {
       headers: { "Content-Type": "text/html; charset=utf-8" }
     });
   }
+  if (url.pathname === "/dashboard") {
+    return new Response(getDashboardHtml(), {
+      headers: { "Content-Type": "text/html; charset=utf-8" }
+    });
+  }
   if (url.pathname === "/docs") {
     return new Response(getDocsHtml(), {
       headers: { "Content-Type": "text/html; charset=utf-8" }
     });
+  }
+  if (url.pathname === "/api/stripe/webhook" && request.method === "POST") {
+    return handleStripeWebhook(request, env);
+  }
+  if (url.pathname.startsWith("/api/auth/")) {
+    return handleAuthApi(request, env, url);
+  }
+  if (url.pathname.startsWith("/api/user/")) {
+    return handleUserApi(request, env, url);
+  }
+  if (url.pathname.startsWith("/api/admin/users") || url.pathname.startsWith("/api/admin/pricing") || url.pathname.startsWith("/api/admin/usage") || url.pathname.startsWith("/api/admin/transactions")) {
+    return handleAdminPricingApi(request, env, url);
   }
   if (url.pathname.startsWith("/api/")) {
     return handleApiRequest(request, env, url);
@@ -3349,6 +5475,26 @@ async function handleRequest(request, env, ctx) {
     });
   }
   return handleProxyRequest(request, env, url, ctx);
+}
+async function handleStripeWebhook(request, env) {
+  try {
+    const payload = await request.text();
+    const sigHeader = request.headers.get("stripe-signature");
+    if (!sigHeader || !env.STRIPE_WEBHOOK_SECRET) {
+      return new Response(JSON.stringify({ error: "Missing signature" }), { status: 400 });
+    }
+    const valid = await verifyWebhookSignature(payload, sigHeader, env.STRIPE_WEBHOOK_SECRET);
+    if (!valid) {
+      return new Response(JSON.stringify({ error: "Invalid signature" }), { status: 400 });
+    }
+    const event = JSON.parse(payload);
+    await handleWebhookEvent(env, event);
+    return new Response(JSON.stringify({ received: true }), {
+      headers: { "Content-Type": "application/json" }
+    });
+  } catch (error) {
+    return new Response(JSON.stringify({ error: "Webhook processing failed" }), { status: 500 });
+  }
 }
 export {
   index_default as default

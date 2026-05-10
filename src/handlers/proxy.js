@@ -1,7 +1,10 @@
 // ============ 代理请求处理 ============
 
 import { jsonResponse } from '../utils/helpers.js'
-import { getConfigFromDB, findBySkAlias } from '../db/supabase.js'
+import { USER_API_KEY_PREFIX } from '../config.js'
+import { getConfigFromDB, findBySkAlias, getRandomEnabledKey } from '../db/supabase.js'
+import { findUserByApiKey, getUserEnabledKeysForUrl } from '../db/user-db.js'
+import { extractTokens, extractModelFromRequest, performBilling, estimateStreamingCost, findPricing, calculateCost } from '../utils/billing.js'
 import { recordRequest, isIpBlocked } from '../cache/stats.js'
 
 /**
@@ -19,18 +22,17 @@ function errorResponse(code, message, hint) {
     code === 'BAD_REQUEST' ? 400 :
       code === 'NOT_FOUND' ? 404 :
         code === 'FORBIDDEN' ? 403 :
-          code === 'SERVICE_ERROR' ? 503 : 500)
+          code === 'PAYMENT_REQUIRED' ? 402 :
+            code === 'SERVICE_ERROR' ? 503 : 500)
 }
 
 /**
  * 处理代理请求
- * 支持两种格式:
- * 1. Authorization: Bearer https://api.example.com:123 (按 ID 查找 token)
- * 2. Authorization: Bearer https://api.example.com:sk-xxx (直接使用 token)
- * @param {Request} request
- * @param {object} env
- * @param {URL} url
- * @param {ExecutionContext} ctx - Cloudflare Workers 执行上下文，用于 waitUntil
+ * 支持格式:
+ * 1. Authorization: Bearer sk-ar-user-xxx (用户 API Key，新增)
+ * 2. Authorization: Bearer sk-ar-xxx (SK 别名)
+ * 3. Authorization: Bearer https://api.example.com:123 (按 ID 查找 token)
+ * 4. Authorization: Bearer https://api.example.com:sk-xxx (直接使用 token)
  */
 export async function handleProxyRequest(request, env, url, ctx) {
   // 获取客户端 IP
@@ -61,7 +63,12 @@ export async function handleProxyRequest(request, env, url, ctx) {
     )
   }
 
-  const authValue = authHeader.substring(7).trim() // 去掉 "Bearer " 前缀
+  const authValue = authHeader.substring(7).trim()
+
+  // 检测用户 API Key 模式 (sk-ar-user-xxx)
+  if (authValue.startsWith(USER_API_KEY_PREFIX)) {
+    return handleUserProxyRequest(request, env, url, ctx, authValue, clientIp)
+  }
 
   // 获取配置
   const config = await getConfigFromDB(env)
@@ -103,10 +110,8 @@ export async function handleProxyRequest(request, env, url, ctx) {
     usedKeyId = found.key.key_id
   } else {
     // 原有格式: <api_url>:<key>
-    // 需要从最后一个冒号分割，因为 URL 中可能包含端口号 (https://api.example.com:8080:key)
     const lastColonIndex = authValue.lastIndexOf(':')
     if (lastColonIndex === -1 || lastColonIndex < 8) {
-      // 没有冒号，或者冒号在 https:// 中
       return errorResponse(
         'BAD_REQUEST',
         '授权格式错误',
@@ -117,7 +122,6 @@ export async function handleProxyRequest(request, env, url, ctx) {
     targetApiUrl = authValue.substring(0, lastColonIndex)
     const keyPart = authValue.substring(lastColonIndex + 1)
 
-    // 验证 API URL 格式
     if (!targetApiUrl.startsWith('http://') && !targetApiUrl.startsWith('https://')) {
       return errorResponse(
         'BAD_REQUEST',
@@ -134,15 +138,12 @@ export async function handleProxyRequest(request, env, url, ctx) {
       )
     }
 
-    // 判断是 key_id (6位字母数字) 还是直接 token
     const isKeyId = /^[a-z0-9]{6}$/.test(keyPart)
 
     if (isKeyId) {
-      // 按 key_id 查找 token
       const keyId = keyPart
       usedKeyId = keyId
 
-      // 检查该 API URL 是否在配置中
       if (!config[targetApiUrl]) {
         return errorResponse(
           'NOT_FOUND',
@@ -151,7 +152,6 @@ export async function handleProxyRequest(request, env, url, ctx) {
         )
       }
 
-      // 在该 URL 的 keys 中查找指定 key_id
       const keyConfig = config[targetApiUrl].keys.find(k => k.key_id === keyId)
       if (!keyConfig) {
         return errorResponse(
@@ -169,7 +169,6 @@ export async function handleProxyRequest(request, env, url, ctx) {
         )
       }
 
-      // 检查是否过期
       if (keyConfig.expires_at && new Date(keyConfig.expires_at) < new Date()) {
         return errorResponse(
           'FORBIDDEN',
@@ -180,7 +179,6 @@ export async function handleProxyRequest(request, env, url, ctx) {
 
       tokenToUse = keyConfig.token
     } else {
-      // 直接使用传入的 token
       tokenToUse = keyPart
     }
   }
@@ -222,10 +220,9 @@ export async function handleProxyRequest(request, env, url, ctx) {
     const response = await fetch(modifiedRequest)
     const modifiedResponse = new Response(response.body, response)
 
-    // 添加允许跨域访问的响应头
     modifiedResponse.headers.set('Access-Control-Allow-Origin', '*')
 
-    // SSE 流式响应优化：禁用缓冲和压缩，确保实时传输
+    // SSE 流式响应优化
     const contentType = response.headers.get('content-type') || ''
     const isStreaming = contentType.includes('text/event-stream') ||
                         contentType.includes('stream') ||
@@ -235,11 +232,10 @@ export async function handleProxyRequest(request, env, url, ctx) {
       modifiedResponse.headers.set('X-Accel-Buffering', 'no')
       modifiedResponse.headers.set('Connection', 'keep-alive')
       modifiedResponse.headers.set('Content-Encoding', 'identity')
-      // 删除可能导致缓冲的 headers
       modifiedResponse.headers.delete('Content-Length')
     }
 
-    // 记录请求统计（使用 waitUntil 确保在响应后完成）
+    // 记录请求统计
     if (ctx && ctx.waitUntil) {
       ctx.waitUntil(recordRequest(env, {
         apiUrl: targetApiUrl,
@@ -251,7 +247,6 @@ export async function handleProxyRequest(request, env, url, ctx) {
 
     return modifiedResponse
   } catch (error) {
-    // 记录失败请求
     if (ctx && ctx.waitUntil) {
       ctx.waitUntil(recordRequest(env, {
         apiUrl: targetApiUrl,
@@ -266,6 +261,233 @@ export async function handleProxyRequest(request, env, url, ctx) {
       'SERVICE_ERROR',
       '代理请求失败',
       `无法连接到目标 API "${targetApiUrl}"，可能是网络问题或目标服务不可用，请稍后重试`
+    )
+  }
+}
+
+/**
+ * 处理用户 API Key 模式的代理请求
+ */
+async function handleUserProxyRequest(request, env, url, ctx, apiKey, clientIp) {
+  // 查找用户
+  const user = await findUserByApiKey(env, apiKey)
+  if (!user) {
+    return errorResponse(
+      'UNAUTHORIZED',
+      '无效的用户 API Key',
+      '请检查您的 API Key 是否正确，或重新登录获取'
+    )
+  }
+
+  if (user.status !== 'active') {
+    return errorResponse(
+      'FORBIDDEN',
+      '账户已被禁用',
+      '您的账户已被暂停或封禁，请联系管理员'
+    )
+  }
+
+  // 余额预检
+  if (user.balance <= 0) {
+    return errorResponse(
+      'PAYMENT_REQUIRED',
+      '余额不足',
+      '您的账户余额不足，请前往用户面板充值后再使用'
+    )
+  }
+
+  // 解析请求 body 获取目标 URL 和 model
+  let requestBody = null
+  let targetApiUrl = null
+  let model = null
+
+  try {
+    // 克隆请求以便读取 body
+    const clonedRequest = request.clone()
+    requestBody = await clonedRequest.text()
+    const bodyData = JSON.parse(requestBody)
+    model = bodyData.model || null
+
+    // 从请求路径推断目标 API URL
+    // 用户请求格式: POST /v1/chat/completions 等标准路径
+    // 需要确定目标是哪个 API
+    targetApiUrl = bodyData._target_url || null
+  } catch {
+    // body 解析失败，继续
+  }
+
+  // 如果没有指定目标 URL，尝试从路径推断
+  if (!targetApiUrl) {
+    // 从请求头中获取目标 URL（兼容直接指定模式）
+    const headerUrl = request.headers.get('X-Target-URL')
+    if (headerUrl) {
+      targetApiUrl = headerUrl
+    }
+  }
+
+  // 如果仍未确定目标 URL，返回错误
+  if (!targetApiUrl) {
+    return errorResponse(
+      'BAD_REQUEST',
+      '缺少目标 API 地址',
+      '请在请求 body 中添加 "_target_url" 字段，或在请求头中添加 "X-Target-URL" 指定目标 API 地址'
+    )
+  }
+
+  // 解析 Key：优先使用用户自己的 Key
+  let tokenToUse = null
+  let keyType = 'shared'
+  let usedKeyId = null
+
+  const userKeys = await getUserEnabledKeysForUrl(env, user.id, targetApiUrl)
+  if (userKeys && userKeys.length > 0) {
+    // 使用用户的 Key
+    const selectedKey = userKeys[Math.floor(Math.random() * userKeys.length)]
+    tokenToUse = selectedKey.token
+    usedKeyId = selectedKey.key_id
+    keyType = 'user'
+
+    // 检查过期
+    if (selectedKey.expires_at && new Date(selectedKey.expires_at) < new Date()) {
+      tokenToUse = null
+    }
+  }
+
+  // 如果用户没有自己的 Key，使用管理员共享 Key
+  if (!tokenToUse) {
+    const sharedConfig = await getConfigFromDB(env)
+    const sharedKey = getRandomEnabledKey(sharedConfig, targetApiUrl)
+    if (!sharedKey) {
+      return errorResponse(
+        'NOT_FOUND',
+        '没有可用的 API Key',
+        `目标 API "${targetApiUrl}" 没有可用的共享 Key，请确认地址正确或添加自己的 Key`
+      )
+    }
+    tokenToUse = sharedKey
+    keyType = 'shared'
+  }
+
+  // 构建转发请求
+  const targetUrl = new URL(targetApiUrl)
+
+  // 反代自身检查
+  const selfHostname = url.hostname.toLowerCase()
+  const targetHostname = targetUrl.hostname.toLowerCase()
+  if (targetHostname === selfHostname ||
+      targetHostname.endsWith('.' + selfHostname) ||
+      selfHostname.endsWith('.' + targetHostname)) {
+    return errorResponse('FORBIDDEN', '禁止反代自身', '不允许将请求代理到代理服务自身的域名')
+  }
+
+  url.protocol = targetUrl.protocol
+  url.hostname = targetUrl.hostname
+  url.port = targetUrl.port || ''
+
+  const headers = new Headers(request.headers)
+  headers.set('authorization', 'Bearer ' + tokenToUse)
+  // 移除自定义头
+  headers.delete('X-Target-URL')
+
+  const modifiedRequest = new Request(url.toString(), {
+    headers,
+    method: request.method,
+    body: request.body,
+    redirect: 'follow',
+  })
+
+  try {
+    const response = await fetch(modifiedRequest)
+
+    // 检测是否流式
+    const contentType = response.headers.get('content-type') || ''
+    const isStreaming = contentType.includes('text/event-stream') ||
+                        contentType.includes('stream')
+
+    let billingInfo = { apiUrl: targetApiUrl, model, keyId: usedKeyId, keyType }
+
+    if (!isStreaming && response.ok) {
+      // 非流式：克隆响应提取 token
+      const clonedResponse = response.clone()
+      ctx.waitUntil((async () => {
+        try {
+          const body = await clonedResponse.text()
+          const tokens = extractTokens(body, targetApiUrl)
+          billingInfo.inputTokens = tokens.inputTokens
+          billingInfo.outputTokens = tokens.outputTokens
+          billingInfo.model = tokens.model || model
+          await performBilling(env, user.id, billingInfo)
+        } catch { /* ignore */ }
+      })())
+    } else if (isStreaming) {
+      // 流式：估算扣费
+      ctx.waitUntil((async () => {
+        try {
+          const pricing = await findPricing(env, targetApiUrl, model)
+          const estimatedCost = 0.001 // 固定估算
+          const cost = Math.max(calculateCost(0, 0, pricing), estimatedCost)
+          const { deductBalance, createTransaction, createUsageRecord } = await import('../db/user-db.js')
+          const result = await deductBalance(env, user.id, cost)
+          if (result.success) {
+            await createTransaction(env, {
+              userId: user.id,
+              type: 'usage',
+              amount: -cost,
+              balanceAfter: result.balance,
+              description: `${model || 'streaming'} - estimated`,
+            })
+            await createUsageRecord(env, {
+              userId: user.id,
+              apiUrl: targetApiUrl,
+              model,
+              inputTokens: 0,
+              outputTokens: 0,
+              cost,
+              keyId: usedKeyId,
+              keyType,
+            })
+          }
+        } catch { /* ignore */ }
+      })())
+    }
+
+    const modifiedResponse = new Response(response.body, response)
+    modifiedResponse.headers.set('Access-Control-Allow-Origin', '*')
+
+    if (isStreaming) {
+      modifiedResponse.headers.set('Cache-Control', 'no-cache, no-store, no-transform, must-revalidate')
+      modifiedResponse.headers.set('X-Accel-Buffering', 'no')
+      modifiedResponse.headers.set('Connection', 'keep-alive')
+      modifiedResponse.headers.set('Content-Encoding', 'identity')
+      modifiedResponse.headers.delete('Content-Length')
+    }
+
+    // 统计
+    if (ctx && ctx.waitUntil) {
+      ctx.waitUntil(recordRequest(env, {
+        apiUrl: targetApiUrl,
+        keyId: usedKeyId,
+        success: response.ok,
+        ip: clientIp,
+      }))
+    }
+
+    return modifiedResponse
+  } catch (error) {
+    if (ctx && ctx.waitUntil) {
+      ctx.waitUntil(recordRequest(env, {
+        apiUrl: targetApiUrl,
+        keyId: usedKeyId,
+        success: false,
+        ip: clientIp,
+      }))
+    }
+
+    console.error('User proxy request error:', error)
+    return errorResponse(
+      'SERVICE_ERROR',
+      '代理请求失败',
+      `无法连接到目标 API "${targetApiUrl}"，可能是网络问题或目标服务不可用`
     )
   }
 }

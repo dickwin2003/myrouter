@@ -249,6 +249,54 @@ export function getAdminHtml() {
         </div>
         <div id="pagination"></div>
       </div>
+
+      <!-- 用户管理 & 定价规则 Tab -->
+      <div class="glass-effect rounded-2xl shadow-xl mini-card mt-6">
+        <div class="flex border-b border-purple-200 mb-4">
+          <button onclick="showAdminTab('users')" class="admin-tab flex-1 py-3 text-center font-medium text-sm transition-all" data-tab="users"><i class="fas fa-users mr-1"></i>用户管理</button>
+          <button onclick="showAdminTab('pricing')" class="admin-tab flex-1 py-3 text-center font-medium text-sm transition-all" data-tab="pricing"><i class="fas fa-tags mr-1"></i>定价规则</button>
+        </div>
+        <!-- 用户管理 -->
+        <div id="adminTabUsers">
+          <div class="overflow-x-auto">
+            <table class="w-full mini-table">
+              <thead><tr class="border-b border-purple-200">
+                <th class="text-left py-2 px-2 text-xs font-medium text-gray-600">ID</th>
+                <th class="text-left py-2 px-2 text-xs font-medium text-gray-600">邮箱</th>
+                <th class="text-left py-2 px-2 text-xs font-medium text-gray-600">昵称</th>
+                <th class="text-center py-2 px-2 text-xs font-medium text-gray-600">余额</th>
+                <th class="text-center py-2 px-2 text-xs font-medium text-gray-600">状态</th>
+                <th class="text-left py-2 px-2 text-xs font-medium text-gray-600">注册时间</th>
+                <th class="text-center py-2 px-2 text-xs font-medium text-gray-600">操作</th>
+              </tr></thead>
+              <tbody id="usersTableBody"><tr><td colspan="7" class="text-center text-gray-400 py-4 text-sm">点击上方标签加载</td></tr></tbody>
+            </table>
+          </div>
+        </div>
+        <!-- 定价规则 -->
+        <div id="adminTabPricing" class="hidden">
+          <div class="grid grid-cols-1 md:grid-cols-5 gap-3 mb-4 p-3 bg-purple-50 rounded-lg">
+            <input type="url" id="priceApiUrl" placeholder="API URL" class="mini-input border border-gray-200 rounded-lg">
+            <input type="text" id="priceModel" placeholder="模型匹配 (如 gpt-4*)" class="mini-input border border-gray-200 rounded-lg">
+            <input type="number" step="0.0001" id="priceInputRate" placeholder="输入价格/1K" class="mini-input border border-gray-200 rounded-lg">
+            <input type="number" step="0.0001" id="priceOutputRate" placeholder="输出价格/1K" class="mini-input border border-gray-200 rounded-lg">
+            <button onclick="addPricingRule()" class="mini-btn btn-primary text-white rounded-lg font-medium"><i class="fas fa-plus mr-1"></i>添加</button>
+          </div>
+          <div class="overflow-x-auto">
+            <table class="w-full mini-table">
+              <thead><tr class="border-b border-purple-200">
+                <th class="text-left py-2 px-2 text-xs font-medium text-gray-600">API URL</th>
+                <th class="text-left py-2 px-2 text-xs font-medium text-gray-600">模型</th>
+                <th class="text-center py-2 px-2 text-xs font-medium text-gray-600">输入/1K</th>
+                <th class="text-center py-2 px-2 text-xs font-medium text-gray-600">输出/1K</th>
+                <th class="text-center py-2 px-2 text-xs font-medium text-gray-600">默认</th>
+                <th class="text-center py-2 px-2 text-xs font-medium text-gray-600">操作</th>
+              </tr></thead>
+              <tbody id="pricingTableBody"><tr><td colspan="6" class="text-center text-gray-400 py-4 text-sm">点击上方标签加载</td></tr></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
     </div>
   </div>
 
@@ -860,6 +908,101 @@ export function getAdminHtml() {
         $('#blacklistContent').html('<div class=\"text-xs text-red-400 text-center py-4\">加载失败</div>');
       }
     }
+
+    // ============ 用户管理 & 定价规则 ============
+    function showAdminTab(tab) {
+      $('.admin-tab').removeClass('bg-purple-100 text-purple-700 border-b-2 border-purple-600')
+      $('[data-tab="' + tab + '"]').addClass('bg-purple-100 text-purple-700 border-b-2 border-purple-600')
+      if (tab === 'users') { $('#adminTabUsers').removeClass('hidden'); $('#adminTabPricing').addClass('hidden'); loadUsers(); }
+      else { $('#adminTabPricing').removeClass('hidden'); $('#adminTabUsers').addClass('hidden'); loadPricingRules(); }
+    }
+
+    async function loadUsers() {
+      try {
+        const res = await apiGet('/api/admin/users')
+        if (res && res.users) {
+          let html = res.users.map(u => '<tr class="border-b hover:bg-gray-50">'
+            + '<td class="py-2 px-2 text-xs text-gray-500">' + u.id + '</td>'
+            + '<td class="py-2 px-2 text-xs">' + esc(u.email) + '</td>'
+            + '<td class="py-2 px-2 text-xs">' + esc(u.display_name || '-') + '</td>'
+            + '<td class="py-2 px-2 text-xs text-center font-medium ' + (u.balance > 0 ? 'text-green-600' : 'text-red-500') + '">$' + parseFloat(u.balance || 0).toFixed(2) + '</td>'
+            + '<td class="py-2 px-2 text-xs text-center"><span class="px-2 py-0.5 rounded-full text-xs ' + (u.status === 'active' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700') + '">' + (u.status === 'active' ? '正常' : u.status === 'suspended' ? '暂停' : '封禁') + '</span></td>'
+            + '<td class="py-2 px-2 text-xs text-gray-400">' + formatDate(u.created_at) + '</td>'
+            + '<td class="py-2 px-2 text-xs text-center">'
+            + '<button onclick="adjustBalance(' + u.id + ')" class="text-green-600 hover:text-green-800 mr-1" title="调整余额"><i class="fas fa-dollar-sign"></i></button>'
+            + '<button onclick="toggleUserStatus(' + u.id + ',\\'' + (u.status === 'active' ? 'suspended' : 'active') + '\\')" class="text-yellow-600 hover:text-yellow-800" title="切换状态"><i class="fas fa-power-off"></i></button>'
+            + '</td></tr>').join('')
+          $('#usersTableBody').html(html || '<tr><td colspan="7" class="text-center text-gray-400 py-4 text-sm">暂无用户</td></tr>')
+        }
+      } catch { $('#usersTableBody').html('<tr><td colspan="7" class="text-center text-red-400 py-4 text-sm">加载失败</td></tr>') }
+    }
+
+    async function adjustBalance(userId) {
+      const amount = prompt('输入调整金额（正数加余额，负数扣余额）：')
+      if (amount === null || isNaN(parseFloat(amount))) return
+      const desc = prompt('备注说明（可选）：') || ''
+      const res = await fetch('/api/admin/users/' + userId + '/balance', {
+        method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + authToken },
+        body: JSON.stringify({ amount: parseFloat(amount), description: desc })
+      })
+      const data = await res.json()
+      if (data.success) { showToast('余额已调整', 'success'); loadUsers() }
+      else { showToast(data.error || '操作失败', 'error') }
+    }
+
+    async function toggleUserStatus(userId, newStatus) {
+      const res = await fetch('/api/admin/users/' + userId, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + authToken },
+        body: JSON.stringify({ status: newStatus })
+      })
+      const data = await res.json()
+      if (data.success) { showToast('状态已更新', 'success'); loadUsers() }
+      else { showToast(data.error || '操作失败', 'error') }
+    }
+
+    async function loadPricingRules() {
+      try {
+        const res = await apiGet('/api/admin/pricing')
+        if (res && res.rules) {
+          let html = res.rules.map(r => '<tr class="border-b hover:bg-gray-50">'
+            + '<td class="py-2 px-2 text-xs">' + esc(r.api_url) + '</td>'
+            + '<td class="py-2 px-2 text-xs font-mono">' + esc(r.model_pattern) + '</td>'
+            + '<td class="py-2 px-2 text-xs text-center">$' + parseFloat(r.input_rate).toFixed(4) + '</td>'
+            + '<td class="py-2 px-2 text-xs text-center">$' + parseFloat(r.output_rate).toFixed(4) + '</td>'
+            + '<td class="py-2 px-2 text-xs text-center">' + (r.is_default ? '<i class="fas fa-check text-green-500"></i>' : '-') + '</td>'
+            + '<td class="py-2 px-2 text-xs text-center"><button onclick="deletePricingRule(' + r.id + ')" class="text-red-500 hover:text-red-700"><i class="fas fa-trash"></i></button></td>'
+            + '</tr>').join('')
+          $('#pricingTableBody').html(html || '<tr><td colspan="6" class="text-center text-gray-400 py-4 text-sm">暂无定价规则</td></tr>')
+        }
+      } catch { $('#pricingTableBody').html('<tr><td colspan="6" class="text-center text-red-400 py-4 text-sm">加载失败</td></tr>') }
+    }
+
+    async function addPricingRule() {
+      const api_url = $('#priceApiUrl').val().trim()
+      const model_pattern = $('#priceModel').val().trim() || '*'
+      const input_rate = parseFloat($('#priceInputRate').val()) || 0
+      const output_rate = parseFloat($('#priceOutputRate').val()) || 0
+      if (!api_url) { showToast('请填写 API URL', 'error'); return }
+      const res = await fetch('/api/admin/pricing', {
+        method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + authToken },
+        body: JSON.stringify({ api_url, model_pattern, input_rate, output_rate, is_default: model_pattern === '*' })
+      })
+      const data = await res.json()
+      if (data.success) { showToast('规则已添加', 'success'); $('#priceApiUrl,#priceModel,#priceInputRate,#priceOutputRate').val(''); loadPricingRules() }
+      else { showToast(data.error || '添加失败', 'error') }
+    }
+
+    async function deletePricingRule(id) {
+      if (!confirm('确定删除此定价规则？')) return
+      const res = await fetch('/api/admin/pricing/' + id, {
+        method: 'DELETE', headers: { 'Authorization': 'Bearer ' + authToken }
+      })
+      const data = await res.json()
+      if (data.success) { showToast('已删除', 'success'); loadPricingRules() }
+      else { showToast(data.error || '删除失败', 'error') }
+    }
+
+    function esc(s) { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;') }
   </script>
 </body>
 </html>`

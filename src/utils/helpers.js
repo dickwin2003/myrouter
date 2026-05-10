@@ -1,6 +1,7 @@
 // ============ 工具函数 ============
 
 import { DEFAULT_ADMIN_PASSWORD } from '../config.js'
+import { verifyJWT } from './jwt.js'
 
 /**
  * 获取管理员密码（优先使用环境变量，否则使用默认值）
@@ -119,6 +120,27 @@ export function hasEnabledKey(config, apiUrl) {
   return Object.values(config).some(
     (item) => item.keys && item.keys.some((key) => key.enabled)
   )
+}
+
+/**
+ * 验证用户 JWT Token
+ * @returns {{ userId: number, email: string, role: string } | null}
+ */
+export async function verifyUser(request, env) {
+  const authHeader = request.headers.get('Authorization')
+  if (!authHeader || !authHeader.startsWith('Bearer ')) return null
+
+  const token = authHeader.substring(7).trim()
+  if (!env.JWT_SECRET) return null
+
+  const payload = await verifyJWT(token, env.JWT_SECRET)
+  if (!payload || !payload.sub) return null
+
+  return {
+    userId: payload.sub,
+    email: payload.email,
+    role: payload.role,
+  }
 }
 
 /**
